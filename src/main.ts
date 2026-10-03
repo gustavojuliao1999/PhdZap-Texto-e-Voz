@@ -10,6 +10,7 @@ import { startServer } from "./http/server.js";
 import { LineManager } from "./line-manager.js";
 import { log } from "./log.js";
 import { Store } from "./store.js";
+import { WebhookDispatcher } from "./webhooks.js";
 
 const env = (name: string, fallback = ""): string => process.env[name]?.trim() || fallback;
 
@@ -49,8 +50,10 @@ if ((await store.listLines()).length === 0 && existsSync(path.join(legacyAuth, "
 
 const lines = new LineManager(store);
 const sessions = new Sessions(prisma);
+// Endereço público do gateway: usado nos links de mídia enviados ao webhook.
+const webhooks = new WebhookDispatcher(lines, env("PUBLIC_URL").replace(/\/+$/, ""));
 const server = startServer({
-  lines, store, db: prisma, sessions,
+  lines, store, webhooks, db: prisma, sessions,
   port: Number(env("PORT", "3000")),
   host: env("HOST", "127.0.0.1"),
   adminKey,

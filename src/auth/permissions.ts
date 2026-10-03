@@ -1,20 +1,21 @@
 import type { PrismaClient } from "@prisma/client";
 
 /** Permissões por telefone (concedidas a grupos). */
-export const PERMISSIONS = ["view", "receive", "dial", "connection", "settings", "integrations"] as const;
+export const PERMISSIONS = ["view", "receive", "dial", "messages", "connection", "settings", "integrations"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
   view: "Ver telefone e histórico",
   receive: "Receber/atender ligações",
   dial: "Fazer ligações",
+  messages: "Ver e enviar mensagens",
   connection: "Conectar/desconectar telefone (QR)",
   settings: "Alterar configurações",
   integrations: "Token, iframes, SDK e API",
 };
 
 /** O token da linha (iframes/SDK/API) dá acesso de atendente, não de administração. */
-const TOKEN_PERMISSIONS = new Set<Permission>(["view", "receive", "dial"]);
+const TOKEN_PERMISSIONS = new Set<Permission>(["view", "receive", "dial", "messages"]);
 
 /** Quem está fazendo a requisição. */
 export type Principal =

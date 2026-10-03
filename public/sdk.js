@@ -10,8 +10,9 @@
  *   </script>
  *
  * Eventos: ready, line, incoming, dialing, answered, answered-elsewhere, connected,
- *          ended, busy, levels, error, disconnected, reconnected.
- * Métodos: answer(), reject(), dial(numero), hangup(), mute(bool), unlockAudio(), destroy().
+ *          ended, busy, levels, error, disconnected, reconnected, message, message-status.
+ * Métodos: answer(), reject(), dial(numero), hangup(), mute(bool), unlockAudio(), destroy(),
+ *          sendMessage(numero, texto | conteúdo), messages({ contact, limit, before }), markRead(id).
  */
 (function (global) {
   "use strict";
@@ -300,6 +301,9 @@
         break;
       case "busy":
         this.emit("busy", { from: e.from }); break;
+      case "message":
+      case "message-status":
+        this.emit(e.type, e.message); break;
     }
     this._sync(prev);
   };
@@ -378,6 +382,30 @@
 
   /** Histórico e ligação atual da linha. */
   Phone.prototype.history = function () { return this._api("GET", "/calls"); };
+
+  /**
+   * Envia uma mensagem. `content` é o texto ou um objeto da API, ex.:
+   * { type: "audio", url: "https://…/recado.mp3" } ou { type: "image", base64: "data:image/png;base64,…", caption: "…" }.
+   */
+  Phone.prototype.sendMessage = function (number, content) {
+    var body = typeof content === "string" ? { text: content } : Object.assign({}, content);
+    body.to = String(number);
+    if (this.agent && !body.agent) body.agent = this.agent;
+    return this._api("POST", "/messages", body);
+  };
+
+  /** Mensagens (mais recentes primeiro). opts: { contact, limit, before }. */
+  Phone.prototype.messages = function (opts) {
+    var q = new URLSearchParams();
+    Object.keys(opts || {}).forEach(function (k) { if (opts[k] != null) q.set(k, String(opts[k])); });
+    var qs = q.toString();
+    return this._api("GET", "/messages" + (qs ? "?" + qs : ""));
+  };
+
+  /** Marca a mensagem recebida (e as anteriores da conversa) como lida. */
+  Phone.prototype.markRead = function (messageId) {
+    return this._api("POST", "/messages/" + encodeURIComponent(messageId) + "/read");
+  };
 
   /** Encerra a conexão (não desliga a ligação em andamento de outros atendentes). */
   Phone.prototype.destroy = function () {

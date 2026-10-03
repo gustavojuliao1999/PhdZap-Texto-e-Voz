@@ -38,6 +38,7 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY:?defina ADMIN_API_KEY no .env}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       VOIP_DEBUG: ${VOIP_DEBUG:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
       HOST: 0.0.0.0
       PORT: 3000
       DATA_DIR: /data

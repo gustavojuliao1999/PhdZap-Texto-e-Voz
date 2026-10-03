@@ -69,8 +69,14 @@ model Line {
   bridgeUrl            String      @default("ws://127.0.0.1:8090/media")
   bridgeSampleRate     Int         @default(16000)
   allowedOrigins       String[]    @default([])
+  /// Webhook: recebe mensagens e eventos de ligação (POST JSON assinado).
+  webhookUrl           String      @default("")
+  webhookSecret        String      @default("")
+  /// Eventos enviados ao webhook (vazio = todos).
+  webhookEvents        String[]    @default([])
   groups               GroupLine[]
   calls                Call[]
+  messages             Message[]
 }
 
 /// Histórico de ligações.
@@ -94,6 +100,35 @@ model Call {
 
   @@index([lineId, startedAt(sort: Desc)])
   @@index([startedAt(sort: Desc)])
+}
+
+/// Mensagens (conversas individuais) de cada telefone.
+model Message {
+  id        String   @id @default(cuid())
+  lineId    String
+  /// Id da mensagem no WhatsApp.
+  waId      String
+  direction String
+  remote    String
+  remoteJid String
+  pushName  String?
+  type      String
+  text      String?
+  /// media / location / contact
+  extra     Json?
+  replyTo   String?
+  status    String
+  /// Quem enviou pelo gateway (usuário do painel ou "API"); vazio = recebida ou enviada pelo celular.
+  agent     String?
+  timestamp DateTime
+  /// Mensagem do WhatsApp serializada (para baixar a mídia e responder citando).
+  raw       String?
+  createdAt DateTime @default(now())
+  line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@unique([lineId, waId])
+  @@index([lineId, remote, timestamp(sort: Desc)])
+  @@index([lineId, timestamp(sort: Desc)])
 }
 
 /// Sessão de login no painel (cookie). Guarda só o hash do token.

@@ -1,13 +1,17 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Call, Line, PrismaClient } from "@prisma/client";
-import type { CallView } from "./line-manager.js";
+import { Prisma, type Call, type Line, type Message, type PrismaClient } from "@prisma/client";
+import type { CallView, MessageView } from "./line-manager.js";
 import { log } from "./log.js";
-import type { HandlerName, LineConfig } from "./worker/protocol.js";
+import type { HandlerName, LineConfig, MessageRecord, MessageStatus } from "./worker/protocol.js";
 
 export const newLineToken = (): string => `wvl_${randomBytes(24).toString("base64url")}`;
 export const newAdminKey = (): string => `wva_${randomBytes(24).toString("base64url")}`;
+export const newWebhookSecret = (): string => `whs_${randomBytes(24).toString("base64url")}`;
+
+/** Ordem dos status: um "delivered" atrasado não volta uma mensagem já lida. */
+const STATUS_RANK: Record<MessageStatus, number> = { error: 0, pending: 1, sent: 2, delivered: 3, read: 4, played: 5 };
 
 const toConfig = (l: Line): LineConfig => ({
   id: l.id,
@@ -21,6 +25,9 @@ const toConfig = (l: Line): LineConfig => ({
   bridgeUrl: l.bridgeUrl,
   bridgeSampleRate: l.bridgeSampleRate,
   allowedOrigins: l.allowedOrigins,
+  webhookUrl: l.webhookUrl,
+  webhookSecret: l.webhookSecret,
+  webhookEvents: l.webhookEvents,
 });
 
 const fromConfig = (c: LineConfig) => ({
@@ -33,6 +40,9 @@ const fromConfig = (c: LineConfig) => ({
   bridgeUrl: c.bridgeUrl,
   bridgeSampleRate: c.bridgeSampleRate,
   allowedOrigins: c.allowedOrigins,
+  webhookUrl: c.webhookUrl,
+  webhookSecret: c.webhookSecret,
+  webhookEvents: c.webhookEvents,
 });
 
 const toView = (c: Call): CallView => ({
@@ -52,6 +62,25 @@ const toView = (c: Call): CallView => ({
   endedAt: c.endedAt?.toISOString(),
   endReason: c.endReason ?? undefined,
 });
+
+const toMessageView = (m: Message): MessageView => {
+  const extra = (m.extra ?? {}) as Pick<MessageRecord, "media" | "location" | "contact">;
+  return {
+    id: m.waId,
+    lineId: m.lineId,
+    direction: m.direction as MessageView["direction"],
+    remote: m.remote,
+    remoteJid: m.remoteJid,
+    pushName: m.pushName ?? undefined,
+    type: m.type as MessageView["type"],
+    text: m.text ?? undefined,
+    ...extra,
+    replyTo: m.replyTo ?? undefined,
+    status: m.status as MessageStatus,
+    agent: m.agent ?? undefined,
+    timestamp: m.timestamp.toISOString(),
+  };
+};
 
 const date = (iso?: string): Date | undefined => (iso ? new Date(iso) : undefined);
 
@@ -90,6 +119,9 @@ export class Store {
     bridgeUrl: "ws://127.0.0.1:8090/media",
     bridgeSampleRate: 16000,
     allowedOrigins: [],
+    webhookUrl: "",
+    webhookSecret: newWebhookSecret(),
+    webhookEvents: [],
   });
 
   insertLine = async (c: LineConfig): Promise<void> => {
@@ -135,6 +167,66 @@ export class Store {
       take: limit,
     });
     return rows.map(toView);
+  };
+
+  // ─── mensagens ──────────────────────────────────────────────────────────
+
+  /** Grava a mensagem. Retorna null se ela já existia (o WhatsApp pode repetir eventos). */
+  insertMessage = async (lineId: string, rec: MessageRecord, raw: string, agent?: string): Promise<MessageView | null> => {
+    const extra = { media: rec.media, location: rec.location, contact: rec.contact };
+    try {
+      const row = await this.db.message.create({
+        data: {
+          lineId,
+          waId: rec.id,
+          direction: rec.direction,
+          remote: rec.remote,
+          remoteJid: rec.remoteJid,
+          pushName: rec.pushName,
+          type: rec.type,
+          text: rec.text,
+          extra: Object.values(extra).some(Boolean) ? (JSON.parse(JSON.stringify(extra)) as Prisma.InputJsonObject) : undefined,
+          replyTo: rec.replyTo,
+          status: rec.status,
+          agent,
+          timestamp: new Date(rec.timestamp),
+          raw,
+        },
+      });
+      return toMessageView(row);
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return null;
+      throw err;
+    }
+  };
+
+  /** Atualiza o status só se ele avançou. Retorna a mensagem atualizada ou null. */
+  updateMessageStatus = async (lineId: string, waId: string, status: MessageStatus): Promise<MessageView | null> => {
+    const row = await this.db.message.findUnique({ where: { lineId_waId: { lineId, waId } } });
+    if (!row || STATUS_RANK[status] <= (STATUS_RANK[row.status as MessageStatus] ?? -1)) return null;
+    return toMessageView(await this.db.message.update({ where: { id: row.id }, data: { status } }));
+  };
+
+  /** Mensagens mais recentes primeiro. `remote` filtra por contato; `before` pagina. */
+  listMessages = async (
+    lineId: string,
+    opts: { remote?: string; before?: Date; limit?: number } = {},
+  ): Promise<MessageView[]> => {
+    const rows = await this.db.message.findMany({
+      where: {
+        lineId,
+        ...(opts.remote ? { remote: opts.remote } : {}),
+        ...(opts.before ? { timestamp: { lt: opts.before } } : {}),
+      },
+      orderBy: { timestamp: "desc" },
+      take: Math.min(Math.max(opts.limit ?? 50, 1), 500),
+    });
+    return rows.map(toMessageView);
+  };
+
+  getMessage = async (lineId: string, waId: string): Promise<{ view: MessageView; raw: string | null } | null> => {
+    const row = await this.db.message.findUnique({ where: { lineId_waId: { lineId, waId } } });
+    return row ? { view: toMessageView(row), raw: row.raw } : null;
   };
 
   // ─── migração da versão em arquivos ─────────────────────────────────────

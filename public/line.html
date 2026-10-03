@@ -45,6 +45,9 @@
   pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12.5px; margin: 6px 0; }
   .danger-zone { border-color: rgba(229, 72, 77, .35); }
   .stack { display: flex; flex-direction: column; gap: 16px; max-width: 860px; }
+  .events { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; margin-top: 8px; font-size: 13.5px; }
+  .events label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; }
+  .events input { width: auto; }
 </style>
 </head>
 <body>
@@ -173,6 +176,8 @@ phone.on("connected", (call) => …)          // em ligação
 phone.on("ended", (call) => …)              // encerrada (call.endReason)
 phone.on("busy", ({ from }) => …)           // ligaram com a linha ocupada
 phone.on("levels", ({ mic, remote }) => …)  // volume (0 a 1) para medidores
+phone.on("message", (msg) => …)             // mensagem recebida ou enviada (msg.direction)
+phone.on("message-status", (msg) => …)      // entregue / lida (msg.status)
 phone.on("error", (err) => …)</pre>
         <h4>Métodos e propriedades</h4>
         <pre>await phone.answer()        // atende (o 1º leva; os demais recebem erro 409)
@@ -183,6 +188,10 @@ await phone.hangup()
 phone.mute(true | false)    // sem argumento alterna
 phone.unlockAudio()         // libera o som do toque (chame num clique)
 await phone.history()       // { current, history }
+await phone.sendMessage("5581992338229", "Olá!")
+await phone.sendMessage("5581992338229", { type: "audio", url: "https://…/recado.mp3" })  // áudio de voz
+await phone.messages({ contact: "5581992338229", limit: 50 })
+await phone.markRead(msg.id)
 phone.destroy()
 
 phone.call        // ligação atual { id, direction, remote, pushName, status, ownerAgent… }
@@ -264,7 +273,23 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         <textarea id="fOrigins" rows="3" placeholder="https://meusite.com.br&#10;https://app.meusite.com.br"></textarea>
         <div class="hint">Um por linha. Vazio = qualquer site (o token continua sendo exigido).</div>
 
-        <div class="row" style="margin-top:18px"><button class="green" type="submit">Salvar</button></div>
+        <h4>Webhook (mensagens e ligações)</h4>
+        <label for="fWebhookUrl" style="margin-top:0">URL que recebe os eventos (POST JSON)</label>
+        <input id="fWebhookUrl" placeholder="https://meusistema.com.br/whatsapp/webhook">
+        <div class="hint">Vazio = desligado. Se a sua URL não responder 2xx, o envio é repetido após 5 s, 30 s e 2 min.</div>
+        <label for="fWebhookSecret">Segredo da assinatura</label>
+        <div class="token-row">
+          <input id="fWebhookSecret" placeholder="usado no HMAC-SHA256 do cabeçalho X-Webhook-Signature">
+          <button class="ghost small" type="button" id="genSecretBtn">Gerar</button>
+        </div>
+        <label>Eventos enviados</label>
+        <div class="events" id="fWebhookEvents"></div>
+        <div class="hint">Nenhum marcado = todos.</div>
+
+        <div class="row" style="margin-top:18px">
+          <button class="green" type="submit">Salvar</button>
+          <button class="ghost" type="button" id="testWebhookBtn">Testar webhook</button>
+        </div>
       </form>
 
       <div class="card danger-zone" id="dangerZone">
@@ -392,7 +417,22 @@ const fillForm = () => {
   $("fBridgeRate").value = String(line.bridgeSampleRate);
   $("fMaxDur").value = Math.round(line.maxCallDurationMs / 60000);
   $("fOrigins").value = line.allowedOrigins.join("\n");
+  $("fWebhookUrl").value = line.webhookUrl ?? "";
+  $("fWebhookSecret").value = line.webhookSecret ?? "";
+  document.querySelectorAll("#fWebhookEvents input").forEach((c) => { c.checked = (line.webhookEvents ?? []).includes(c.value); });
   syncBridgeFields();
+};
+const WEBHOOK_EVENTS = {
+  "message.received": "Mensagem recebida", "message.sent": "Mensagem enviada", "message.status": "Status (entregue, lida)",
+  "call.incoming": "Ligação chegando", "call.dialing": "Ligação iniciada", "call.answered": "Ligação atendida (atendente)",
+  "call.connected": "Ligação conectada", "call.ended": "Ligação encerrada", "call.busy": "Ligação com linha ocupada",
+  "line.status": "Status do telefone",
+};
+$("fWebhookEvents").innerHTML = Object.entries(WEBHOOK_EVENTS).map(([ev, label]) =>
+  `<label title="${ev}"><input type="checkbox" value="${ev}"> ${label}</label>`).join("");
+$("genSecretBtn").onclick = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  $("fWebhookSecret").value = "whs_" + btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 const syncBridgeFields = () => { $("bridgeFields").hidden = $("fHandler").value !== "ws-bridge"; };
 $("fHandler").onchange = syncBridgeFields;
@@ -454,11 +494,46 @@ POST /api/v1/calls/CALL_ID/mute   {"muted": true}
 POST /api/v1/calls/CALL_ID/play   {"url": "https://exemplo.com/aviso.mp3"}
 POST /api/v1/calls/CALL_ID/clear  (corta o áudio que está tocando)
 
+# ── Mensagens ──
+# Enviar texto  (replyTo opcional: id de uma mensagem para responder citando)
+curl -X POST ${base}/api/v1/messages -H "Authorization: Bearer ${T}" \\
+  -H "content-type: application/json" -d '{"to":"5511999999999","text":"Olá!"}'
+
+# Enviar áudio de voz (convertido para ogg/opus; "ptt":false manda como arquivo de áudio)
+curl -X POST ${base}/api/v1/messages -H "Authorization: Bearer ${T}" \\
+  -H "content-type: application/json" -d '{"to":"5511999999999","type":"audio","url":"https://exemplo.com/recado.mp3"}'
+
+# Imagem, vídeo, documento ou figurinha: "url" ou "base64" (aceita data:...;base64,)
+{"to":"55...","type":"image","url":"https://exemplo.com/foto.jpg","caption":"Segue a foto"}
+{"to":"55...","type":"document","base64":"JVBERi0x...","fileName":"boleto.pdf"}
+{"to":"55...","type":"location","latitude":-8.05,"longitude":-34.9,"name":"Loja"}
+
+# Histórico (mais recentes primeiro; contact, limit e before=DATA_ISO para paginar)
+curl "${base}/api/v1/messages?contact=5511999999999&limit=50" -H "Authorization: Bearer ${T}"
+
+# Baixar a mídia de uma mensagem / marcar como lida
+curl ${base}/api/v1/messages/MSG_ID/media -H "Authorization: Bearer ${T}" -o arquivo
+curl -X POST ${base}/api/v1/messages/MSG_ID/read -H "Authorization: Bearer ${T}"
+
+# ── Webhook (Configurações › Webhook) ──
+# POST na sua URL, um evento por requisição:
+{"id":"uuid","event":"message.received","timestamp":"...","line":{"id":"${line.id}","name":"...","phone":"55..."},
+ "data":{"id":"3EB0...","direction":"incoming","remote":"5511999999999","pushName":"Maria",
+         "type":"text|image|video|audio|document|sticker|location|contact|reaction|other",
+         "text":"Oi","media":{"mimetype":"audio/ogg","seconds":7,"ptt":true},"mediaUrl":"…/api/v1/messages/3EB0.../media",
+         "status":"delivered","timestamp":"..."}}
+# eventos: message.received  message.sent  message.status  line.status
+#          call.incoming  call.dialing  call.answered  call.connected  call.ended  call.busy  (data = a ligação)
+# Cabeçalhos: X-Webhook-Event, X-Webhook-Timestamp e
+#   X-Webhook-Signature: sha256=HMAC_SHA256(segredo, TIMESTAMP + "." + CORPO) em hex
+# Responda 2xx em até 10 s. Sem 2xx, repete após 5 s, 30 s e 2 min.
+
 # Eventos em tempo real (WebSocket, mensagens JSON)
 ${ws}/api/v1/events?token=${T}
   {"type":"hello","line":{...}}
   {"type":"incoming"|"dialing"|"answered"|"connected"|"ended","call":{...}}
   {"type":"line","line":{"status":"open",...}}     {"type":"busy","from":"55..."}
+  {"type":"message"|"message-status","message":{...}}
 
 # Áudio da ligação (WebSocket binário, PCM16 LE mono 16 kHz nos dois sentidos)
 # Para atender com áudio próprio: abra a mídia e faça POST accept com o mesmo clientId.
@@ -483,10 +558,18 @@ $("configForm").addEventListener("submit", act(async (e) => {
     bridgeSampleRate: Number($("fBridgeRate").value),
     maxCallDurationMs: Math.round(Number($("fMaxDur").value) * 60000),
     allowedOrigins: $("fOrigins").value,
+    webhookUrl: $("fWebhookUrl").value.trim(),
+    webhookSecret: $("fWebhookSecret").value.trim(),
+    webhookEvents: [...document.querySelectorAll("#fWebhookEvents input:checked")].map((c) => c.value),
   });
   render(); fillForm();
   toast("Configurações salvas", true);
 }));
+$("testWebhookBtn").onclick = act(async () => {
+  if ($("fWebhookUrl").value.trim() !== (line.webhookUrl ?? "")) return toast("Salve a URL do webhook antes de testar");
+  const r = await api("POST", `/lines/${lineId}/webhook-test`);
+  toast(r.ok ? `Webhook respondeu HTTP ${r.status} em ${r.ms} ms` : `Falhou: ${r.error ?? `HTTP ${r.status}`}`, r.ok);
+});
 
 $("showTokenBtn").onclick = () => {
   const f = $("tokenField"), show = f.type === "password";

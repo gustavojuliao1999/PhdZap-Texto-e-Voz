@@ -12,6 +12,7 @@ import type { CallHandler } from "../handlers/types.js";
 import { createWsBridgeHandler } from "../handlers/ws-bridge.js";
 import { log } from "../log.js";
 import { WhatsAppConnection } from "../whatsapp.js";
+import { MessageService } from "./messages.js";
 import {
   RESTART_EXIT_CODE, type LineConfig, type ParentMessage, type WorkerCommand, type WorkerMessage,
 } from "./protocol.js";
@@ -55,8 +56,15 @@ const client = new VoipClient({
 const whatsapp = new WhatsAppConnection(client, authDir);
 const manager = new CallManager(client, policy, handlers, handlers[line.handler] ?? silenceHandler);
 
-whatsapp.on("state", (state) => send({ t: "wa", state }));
+const messages = new MessageService(client);
+
+whatsapp.on("state", (state) => {
+  if (state.status === "open") messages.attach();
+  send({ t: "wa", state });
+});
 manager.on("event", (event) => send({ t: "event", event }));
+messages.on("message", (message, raw) => send({ t: "event", event: { type: "message", message, raw } }));
+messages.on("status", (s) => send({ t: "event", event: { type: "message-status", ...s } }));
 
 const requireSession = (callId: string) => {
   const s = manager.get(callId);
@@ -91,6 +99,12 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
       manager.setDefaultHandler(handlers[line.handler] ?? silenceHandler);
       return;
     }
+    case "send-message": {
+      if (!whatsapp.isOpen) throw new Error("WhatsApp desta linha não está conectado");
+      return messages.send(c.to, c.content, c.quotedRaw);
+    }
+    case "download-media": return messages.download(c.raw);
+    case "mark-read": return messages.markRead(c.raw);
     case "logout": {
       await whatsapp.logout();
       // O stack WASM não reinicializa no mesmo processo: o principal sobe outro.

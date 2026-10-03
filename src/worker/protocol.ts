@@ -17,13 +17,62 @@ export type LineConfig = CallPolicy & {
   bridgeSampleRate: number;
   /** Origens que podem incorporar os iframes desta linha (vazio = qualquer). */
   allowedOrigins: string[];
+  /** URL que recebe os eventos (POST JSON). Vazio = desligado. */
+  webhookUrl: string;
+  /** Segredo da assinatura HMAC-SHA256 do webhook. */
+  webhookSecret: string;
+  /** Eventos enviados ao webhook (vazio = todos). */
+  webhookEvents: string[];
 };
+
+export type MessageType =
+  | "text" | "image" | "video" | "audio" | "document" | "sticker" | "location" | "contact" | "reaction" | "other";
+export type MessageStatus = "error" | "pending" | "sent" | "delivered" | "read" | "played";
+
+/** Mensagem como o worker a entrega (sem o JSON bruto do WhatsApp). */
+export type MessageRecord = {
+  /** Id da mensagem no WhatsApp. */
+  id: string;
+  direction: "incoming" | "outgoing";
+  /** Número (dígitos) do contato quando conhecido, senão o JID. */
+  remote: string;
+  remoteJid: string;
+  pushName?: string;
+  type: MessageType;
+  /** Texto, legenda da mídia ou emoji da reação. */
+  text?: string;
+  media?: { mimetype?: string; fileName?: string; size?: number; seconds?: number; ptt?: boolean };
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
+  contact?: { name?: string; vcard?: string };
+  /** Id da mensagem respondida (ou reagida). */
+  replyTo?: string;
+  status: MessageStatus;
+  timestamp: string;
+};
+
+/** Conteúdo a enviar. */
+export type OutgoingContent =
+  | { type: "text"; text: string }
+  | {
+      type: "image" | "video" | "audio" | "document" | "sticker";
+      data: Uint8Array;
+      mimetype: string;
+      fileName?: string;
+      caption?: string;
+      /** Áudio de voz (já em ogg/opus). */
+      ptt?: boolean;
+      seconds?: number;
+    }
+  | { type: "location"; latitude: number; longitude: number; name?: string; address?: string };
 
 export type GatewayEvent =
   | { type: "incoming"; call: CallRecord }
   | { type: "busy"; from: string; callId: string }
   | { type: "connected"; call: CallRecord }
-  | { type: "ended"; call: CallRecord };
+  | { type: "ended"; call: CallRecord }
+  /** `raw`: mensagem do WhatsApp serializada (para baixar mídia e responder). */
+  | { type: "message"; message: MessageRecord; raw: string }
+  | { type: "message-status"; id: string; remoteJid: string; status: MessageStatus };
 
 export type WorkerCommand =
   | { cmd: "dial"; to: string; handler?: string }
@@ -34,6 +83,9 @@ export type WorkerCommand =
   | { cmd: "clear"; callId: string }
   | { cmd: "play"; callId: string; url: string }
   | { cmd: "configure"; config: LineConfig }
+  | { cmd: "send-message"; to: string; content: OutgoingContent; quotedRaw?: string }
+  | { cmd: "download-media"; raw: string }
+  | { cmd: "mark-read"; raw: string }
   | { cmd: "logout" };
 
 /** Principal -> worker */

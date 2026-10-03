@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { log } from "./log.js";
 import type { CallRecord } from "./session.js";
 import type { Store } from "./store.js";
+import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
 import {
-  RESTART_EXIT_CODE, type GatewayEvent, type LineConfig, type WorkerCommand, type WorkerMessage,
+  RESTART_EXIT_CODE, type GatewayEvent, type LineConfig, type MessageRecord, type MessageStatus,
+  type OutgoingContent, type WorkerCommand, type WorkerMessage,
 } from "./worker/protocol.js";
 
 // LINE_WORKER_ENTRY permite trocar o worker (testes).
@@ -26,10 +28,19 @@ export type CallView = CallRecord & {
   ownerUserId?: string;
 };
 
-/** Evento publicado para os WebSockets (de uma linha e do admin). */
+/** Mensagem como vista pelos clientes. */
+export type MessageView = MessageRecord & {
+  lineId: string;
+  /** Quem enviou pelo gateway (usuário do painel ou "API"). */
+  agent?: string;
+};
+
+/** Evento publicado para os WebSockets (de uma linha e do admin) e para o webhook. */
 export type LineEvent =
   | { type: "dialing" | "incoming" | "connected" | "ended" | "answered"; lineId: string; call: CallView }
   | { type: "busy"; lineId: string; from: string }
+  | { type: "message"; lineId: string; message: MessageView }
+  | { type: "message-status"; lineId: string; message: MessageView }
   | { type: "line"; lineId: string; line: LinePublic };
 
 /** Visão da linha para quem tem só o token da linha (sem QR, sem segredos). */
@@ -228,6 +239,9 @@ export class LineRuntime extends EventEmitter {
       this.emit("event", { type: "busy", lineId, from: e.from } satisfies LineEvent);
       return;
     }
+    // Mensagens: o LineManager grava no banco antes de publicar.
+    if (e.type === "message") { this.emit("wa-message", e.message, e.raw); return; }
+    if (e.type === "message-status") { this.emit("wa-message-status", e.id, e.status); return; }
     // Preserva quem atendeu entre atualizações do worker.
     const prev = this.current?.id === e.call.id ? this.current : null;
     const view: CallView = {
@@ -337,6 +351,48 @@ export class LineManager extends EventEmitter {
 
   stopAll = async (): Promise<void> => { await Promise.all(this.lines.map((l) => l.stop())); };
 
+  // ─── mensagens ──────────────────────────────────────────────────────────
+
+  /** Envia uma mensagem; `replyTo` = id de uma mensagem desta linha para citar. */
+  sendMessage = async (
+    id: string, to: string, content: OutgoingContent, opts: { agent?: string; replyTo?: string } = {},
+  ): Promise<MessageView> => {
+    const line = this.#require(id);
+    if (line.wa.status !== "open") throw new HttpError(503, "WhatsApp desta linha não está conectado");
+    let quotedRaw: string | undefined;
+    if (opts.replyTo) {
+      const quoted = await this.store.getMessage(id, opts.replyTo);
+      if (!quoted?.raw) throw new HttpError(404, "Mensagem citada (replyTo) não encontrada");
+      quotedRaw = quoted.raw;
+    }
+    const { message, raw } = await line.request<{ message: MessageRecord; raw: string }>(
+      { cmd: "send-message", to, content, quotedRaw },
+    );
+    const view = await this.store.insertMessage(id, message, raw, opts.agent);
+    if (!view) return { ...message, lineId: id, agent: opts.agent }; // o evento do WhatsApp chegou antes
+    this.emit("event", { type: "message", lineId: id, message: view } satisfies LineEvent);
+    return view;
+  };
+
+  /** Baixa a mídia de uma mensagem (do WhatsApp, pela linha). */
+  downloadMedia = async (id: string, waId: string): Promise<{ view: MessageView; data: Buffer }> => {
+    const line = this.#require(id);
+    const found = await this.store.getMessage(id, waId);
+    if (!found) throw new HttpError(404, "Mensagem não encontrada");
+    if (!found.view.media || !found.raw) throw new HttpError(404, "Esta mensagem não tem mídia");
+    const data = await line.request<Uint8Array>({ cmd: "download-media", raw: found.raw });
+    return { view: found.view, data: Buffer.from(data.buffer, data.byteOffset, data.byteLength) };
+  };
+
+  /** Marca a mensagem recebida (e as anteriores da conversa) como lida no WhatsApp. */
+  markRead = async (id: string, waId: string): Promise<void> => {
+    const line = this.#require(id);
+    const found = await this.store.getMessage(id, waId);
+    if (!found?.raw) throw new HttpError(404, "Mensagem não encontrada");
+    if (found.view.direction !== "incoming") throw new HttpError(400, "Só mensagens recebidas podem ser marcadas como lidas");
+    await line.request({ cmd: "mark-read", raw: found.raw });
+  };
+
   #add = (config: LineConfig): LineRuntime => {
     const line = new LineRuntime(config, this.store.authDirFor(config.id));
     this.#lines.set(config.id, line);
@@ -345,6 +401,16 @@ export class LineManager extends EventEmitter {
     line.on("audio", (callId: string, pcm: Buffer) => this.emit("audio", config.id, callId, pcm));
     line.on("ended-call", (view: CallView) => {
       this.store.appendCall(view).catch((err) => log.error(`falha ao gravar ligação no histórico: ${err.message}`));
+    });
+    line.on("wa-message", (rec: MessageRecord, raw: string) => {
+      this.store.insertMessage(config.id, rec, raw)
+        .then((view) => { if (view) this.emit("event", { type: "message", lineId: config.id, message: view } satisfies LineEvent); })
+        .catch((err) => log.error(`falha ao gravar mensagem: ${err.message}`));
+    });
+    line.on("wa-message-status", (waId: string, status: MessageStatus) => {
+      this.store.updateMessageStatus(config.id, waId, status)
+        .then((view) => { if (view) this.emit("event", { type: "message-status", lineId: config.id, message: view } satisfies LineEvent); })
+        .catch((err) => log.error(`falha ao atualizar status da mensagem: ${err.message}`));
     });
     return line;
   };
@@ -396,6 +462,23 @@ const sanitizePatch = (p: Partial<LineConfig>): Partial<LineConfig> => {
     for (const o of out.allowedOrigins) {
       if (!/^https?:\/\/[^\s/]+$/.test(o)) throw new HttpError(400, `Origem inválida: ${o} (ex.: https://meusite.com)`);
     }
+  }
+  if (p.webhookUrl !== undefined) {
+    const u = String(p.webhookUrl).trim();
+    if (u && !/^https?:\/\/\S+$/.test(u)) throw new HttpError(400, "URL do webhook deve começar com http:// ou https://");
+    out.webhookUrl = u;
+  }
+  if (p.webhookSecret !== undefined) {
+    const sec = String(p.webhookSecret).trim();
+    if (sec.length > 200) throw new HttpError(400, "Segredo do webhook muito longo (máx. 200)");
+    out.webhookSecret = sec;
+  }
+  if (p.webhookEvents !== undefined) {
+    if (!Array.isArray(p.webhookEvents)) throw new HttpError(400, "webhookEvents deve ser uma lista");
+    for (const ev of p.webhookEvents) {
+      if (!WEBHOOK_EVENTS.includes(ev as any)) throw new HttpError(400, `Evento de webhook inválido: ${ev} (use ${WEBHOOK_EVENTS.join(", ")})`);
+    }
+    out.webhookEvents = [...new Set(p.webhookEvents.map(String))];
   }
   return out;
 };

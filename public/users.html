@@ -124,10 +124,10 @@ let editingUser = null, editingGroup = null;
 
 const PRESETS = {
   "": [],
-  atendente: ["view", "receive", "dial"],
+  atendente: ["view", "receive", "dial", "messages"],
   receptor: ["view", "receive"],
-  supervisor: ["view", "receive", "dial", "connection"],
-  gerente: ["view", "receive", "dial", "connection", "settings", "integrations"],
+  supervisor: ["view", "receive", "dial", "messages", "connection"],
+  gerente: ["view", "receive", "dial", "messages", "connection", "settings", "integrations"],
   leitura: ["view"],
 };
 const PRESET_LABELS = { "": "—", atendente: "Atendente", receptor: "Só receber", supervisor: "Supervisor", gerente: "Gerente", leitura: "Só ver" };
@@ -146,7 +146,7 @@ const render = () => {
   document.querySelectorAll("[data-user]").forEach((b) => b.onclick = () => openUser(users.find((u) => u.id === b.dataset.user)));
 
   const lineName = (id) => lines.find((l) => l.id === id)?.name ?? "(removido)";
-  const SHORT = { view: "ver", receive: "atender", dial: "ligar", connection: "conectar", settings: "configurar", integrations: "integrações" };
+  const SHORT = { view: "ver", receive: "atender", dial: "ligar", messages: "mensagens", connection: "conectar", settings: "configurar", integrations: "integrações" };
   $("groups").innerHTML = groups.map((g) => `<div class="card group-card">
       <div class="row"><h3 style="flex:1">${esc(g.name)}</h3><button class="small ghost" data-group="${g.id}">Editar</button></div>
       ${g.description ? `<div class="muted" style="font-size:13px">${esc(g.description)}</div>` : ""}

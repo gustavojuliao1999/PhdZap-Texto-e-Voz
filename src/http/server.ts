@@ -15,6 +15,8 @@ import {
 } from "../line-manager.js";
 import { log } from "../log.js";
 import { newLineToken, type Store } from "../store.js";
+import type { WebhookDispatcher } from "../webhooks.js";
+import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../../public/", import.meta.url));
@@ -26,6 +28,7 @@ const LOGIN_WINDOW_MS = 10 * 60_000;
 export type ServerDeps = {
   lines: LineManager;
   store: Store;
+  webhooks: WebhookDispatcher;
   db: PrismaClient;
   sessions: Sessions;
   port: number;
@@ -41,11 +44,11 @@ const safeEqual = (a: string, b: string): boolean => {
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 };
 
-const readJson = async (req: http.IncomingMessage): Promise<any> => {
+const readJson = async (req: http.IncomingMessage, maxBytes = 64 * 1024): Promise<any> => {
   let body = "";
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 64 * 1024) throw new HttpError(413, "Corpo muito grande");
+    if (body.length > maxBytes) throw new HttpError(413, "Corpo muito grande");
   }
   if (!body) return {};
   try { return JSON.parse(body); } catch { throw new HttpError(400, "JSON inválido"); }
@@ -118,6 +121,9 @@ const lineView = (line: LineRuntime, p: Principal) => {
       maxCallDurationMs: c.maxCallDurationMs,
       bridgeUrl: c.bridgeUrl,
       bridgeSampleRate: c.bridgeSampleRate,
+      webhookUrl: c.webhookUrl,
+      webhookSecret: c.webhookSecret,
+      webhookEvents: c.webhookEvents,
     } : {}),
   };
 };
@@ -125,7 +131,7 @@ const lineView = (line: LineRuntime, p: Principal) => {
 // ─── servidor ────────────────────────────────────────────────────────────────
 
 export const startServer = (deps: ServerDeps): http.Server => {
-  const { lines, store, db, sessions } = deps;
+  const { lines, store, db, sessions, webhooks } = deps;
   const loginFailures = new Map<string, { count: number; since: number }>();
 
   /** Quem está logado no painel (cookie) ou o super admin via `Authorization: Bearer <chave>`. */
@@ -353,6 +359,10 @@ export const startServer = (deps: ServerDeps): http.Server => {
           requirePerm(me, id, "integrations");
           return sendJson(res, 200, lineView(await lines.rotateToken(id, newLineToken()), me));
         }
+        if (method === "POST" && action === "webhook-test") {
+          requirePerm(me, id, "settings");
+          return sendJson(res, 200, await webhooks.test(id));
+        }
         if (method === "POST" && action === "logout") { requirePerm(me, id, "connection"); await lines.logout(id); return sendJson(res, 200, { ok: true }); }
         if (method === "POST" && action === "restart") {
           requirePerm(me, id, "connection");
@@ -443,6 +453,47 @@ export const startServer = (deps: ServerDeps): http.Server => {
         }
         return sendJson(res, 200, { ok: true });
       }
+      if (parts[0] === "messages") {
+        requirePerm(principal, lineId, "messages");
+        if (parts.length === 1 && method === "GET") {
+          const before = url.searchParams.get("before");
+          const beforeDate = before ? new Date(before) : undefined;
+          if (beforeDate && Number.isNaN(beforeDate.getTime())) throw new HttpError(400, "Parâmetro 'before' inválido (use data ISO)");
+          const contact = url.searchParams.get("contact")?.replace(/\D/g, "") || undefined;
+          const list = await store.listMessages(lineId, {
+            remote: contact,
+            before: beforeDate,
+            limit: Number(url.searchParams.get("limit") ?? 50) || 50,
+          });
+          return sendJson(res, 200, list.map((m) => ({ ...m, mediaUrl: webhooks.mediaUrl(m) })));
+        }
+        if (parts.length === 1 && method === "POST") {
+          const body = await readJson(req, MAX_MESSAGE_BODY_BYTES);
+          if (typeof body.to !== "string" && typeof body.to !== "number") throw new HttpError(400, "Campo 'to' obrigatório");
+          const content = await parseOutgoing(body);
+          const message = await lines.sendMessage(lineId, String(body.to), content, {
+            agent: agentFor(principal, body.agent) ?? "API",
+            replyTo: typeof body.replyTo === "string" ? body.replyTo : undefined,
+          });
+          return sendJson(res, 201, { ...message, mediaUrl: webhooks.mediaUrl(message) });
+        }
+        if (parts.length === 3 && parts[2] === "media" && method === "GET") {
+          const { view, data } = await lines.downloadMedia(lineId, decodeURIComponent(parts[1]));
+          const fileName = view.media?.fileName ?? `${view.id}`;
+          res.writeHead(200, {
+            "content-type": view.media?.mimetype ?? "application/octet-stream",
+            "content-length": data.length,
+            "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+            "cache-control": "private, max-age=3600",
+            "x-content-type-options": "nosniff",
+          });
+          return void res.end(data);
+        }
+        if (parts.length === 3 && parts[2] === "read" && method === "POST") {
+          await lines.markRead(lineId, decodeURIComponent(parts[1]));
+          return sendJson(res, 200, { ok: true });
+        }
+      }
       throw new HttpError(404, "Rota não encontrada");
     }
 
@@ -492,6 +543,13 @@ const attachWebSockets = (
   const sendOne = (ws: WebSocket, msg: object): void => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); };
 
   lines.on("event", (e: LineEvent) => {
+    // Mensagens só para quem tem a permissão; elas não mudam o estado da linha.
+    if (e.type === "message" || e.type === "message-status") {
+      const msg = { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
+      for (const [ws, p] of lineClients.get(e.lineId) ?? []) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
+      for (const [ws, p] of adminClients) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
+      return;
+    }
     for (const [ws] of lineClients.get(e.lineId) ?? []) sendOne(ws, e);
     const line = lines.get(e.lineId);
     for (const [ws, p] of adminClients) {

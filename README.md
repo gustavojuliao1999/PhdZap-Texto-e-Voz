@@ -9,6 +9,8 @@ Central de ligações de voz do WhatsApp sobre o [`baileys-caller`](../baileys-c
   - **Receptor**: a ligação toca em todos os atendentes; **o primeiro a atender fica na ligação**.
   - **Discador**: faz ligações pela linha.
 - **API REST + WebSocket** por linha (token da linha) e API de gestão (chave de acesso).
+- **Mensagens** (texto, áudio de voz, imagem, vídeo, documento, localização) pela mesma conexão
+  das ligações, com histórico e **webhook** assinado para mensagens e ligações.
 - **Bot/IA**: atendimento automático com a ponte de mídia em tempo real (`ws-bridge`).
 
 ```
@@ -70,11 +72,12 @@ e a pasta `./auth`) são importados para o banco automaticamente.
 | Ver | o telefone e o histórico dele |
 | Receber | atender e recusar ligações |
 | Ligar | fazer ligações |
+| Mensagens | ver e enviar mensagens |
 | Conectar | ler o QR, desconectar e reiniciar o telefone |
 | Configurar | alterar as configurações do telefone |
 | Integrações | ver o token, os códigos de iframe/SDK e a API, e gerar um novo token |
 
-  Há perfis prontos na tela de grupos: Atendente (ver, receber, ligar), Só receber, Supervisor
+  Há perfis prontos na tela de grupos: Atendente (ver, receber, ligar, mensagens), Só receber, Supervisor
   (+ conectar), Gerente (tudo) e Só ver.
 - No painel, os iframes de atendimento usam o **login** do usuário, não o token da linha. Assim,
   um atendente nunca vê o token. Ele atende e liga com o próprio nome, que aparece no histórico.
@@ -157,14 +160,50 @@ A aba **API** de cada linha no painel mostra os exemplos prontos com a URL certa
 | POST | `/api/v1/calls/:id/reject` · `/hangup` · `/clear` | | |
 | POST | `/api/v1/calls/:id/mute` | `{muted}` | |
 | POST | `/api/v1/calls/:id/play` | `{url}` | toca um áudio na ligação |
-| WS   | `/api/v1/events?token=` | | `hello`, `incoming`, `dialing`, `answered`, `connected`, `ended`, `busy`, `line` |
+| GET  | `/api/v1/messages?contact=&limit=&before=` | | mensagens, mais recentes primeiro |
+| POST | `/api/v1/messages` | `{to, text}` ou `{to, type, url \| base64, caption?, fileName?, ptt?}` | envia mensagem (`replyTo` opcional) |
+| GET  | `/api/v1/messages/:id/media` | | baixa a mídia da mensagem |
+| POST | `/api/v1/messages/:id/read` | | marca como lida no WhatsApp |
+| WS   | `/api/v1/events?token=` | | `hello`, `incoming`, `dialing`, `answered`, `connected`, `ended`, `busy`, `line`, `message`, `message-status` |
 | WS   | `/api/v1/media?token=&call=&clientId=` | | áudio PCM16 LE mono 16 kHz nos dois sentidos |
 
 `handler`: `browser` (áudio via `/api/v1/media`), `echo`, `silence`, `ws-bridge` (IA).
 
 Gestão (chave de acesso, `Authorization: Bearer <chave>`): `GET/POST /admin/api/lines`,
 `PATCH/DELETE /admin/api/lines/:id`, `POST /admin/api/lines/:id/{logout,restart,rotate-token}`,
-`GET /admin/api/calls`.
+`GET /admin/api/calls`, `POST /admin/api/lines/:id/webhook-test`.
+
+## Mensagens e webhook
+
+As mensagens usam o mesmo socket do WhatsApp das ligações (o WhatsApp aceita uma conexão por
+aparelho vinculado). Só conversas individuais: grupos, status e canais são ignorados.
+
+- `type`: `text`, `image`, `video`, `audio`, `document`, `sticker` (webp) ou `location`
+  (`latitude`, `longitude`, `name?`, `address?`). Sem `type`, a mídia é deduzida pelo mimetype.
+- **Áudio** sai como **áudio de voz** (convertido para ogg/opus com o ffmpeg). Use `"ptt": false`
+  para enviar como arquivo de áudio.
+- Mídia por `url` (o gateway baixa) ou `base64` (aceita `data:...;base64,`), até 25 MB.
+- O número segue a mesma regra das ligações: DDI+DDD+número, testando com e sem o 9º dígito.
+
+**Webhook** (Configurações da linha › Webhook): o gateway faz um `POST` JSON para a sua URL a
+cada evento:
+
+```json
+{"id":"uuid","event":"message.received","timestamp":"…","line":{"id":"…","name":"…","phone":"55…"},
+ "data":{"id":"3EB0…","direction":"incoming","remote":"5511999999999","pushName":"Maria","type":"audio",
+         "media":{"mimetype":"audio/ogg; codecs=opus","seconds":7,"ptt":true},
+         "mediaUrl":"https://SEU_GATEWAY/api/v1/messages/3EB0…/media","status":"delivered","timestamp":"…"}}
+```
+
+- Eventos: `message.received`, `message.sent` (pela API, pelo painel ou pelo celular),
+  `message.status` (`sent` → `delivered` → `read` → `played`), `call.incoming`, `call.dialing`,
+  `call.answered`, `call.connected`, `call.ended`, `call.busy` e `line.status`. Dá para escolher quais.
+- Assinatura: `X-Webhook-Signature: sha256=<HMAC-SHA256(segredo, X-Webhook-Timestamp + "." + corpo)>`
+  em hex. Confira antes de confiar no evento.
+- Responda 2xx em até 10 s. Se não responder, o envio é repetido após 5 s, 30 s e 2 min, mantendo a
+  ordem dos eventos de cada linha. A fila fica em memória: eventos pendentes se perdem se o gateway
+  reiniciar. O histórico continua no banco (`GET /api/v1/messages`).
+- `mediaUrl` usa a variável `PUBLIC_URL` e exige o token da linha (`Authorization: Bearer`).
 
 ## Bot / IA (`ws-bridge`)
 
