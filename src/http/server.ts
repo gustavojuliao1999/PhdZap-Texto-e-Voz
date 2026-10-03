@@ -453,6 +453,30 @@ export const startServer = (deps: ServerDeps): http.Server => {
         }
         return sendJson(res, 200, { ok: true });
       }
+      if (parts[0] === "chats" || parts[0] === "contacts") {
+        requirePerm(principal, lineId, "messages");
+        if (parts[0] === "chats" && parts.length === 1 && method === "GET") {
+          const chats = await store.listChats(lineId);
+          return sendJson(res, 200, chats.map((c) => ({ ...c, last: { ...c.last, mediaUrl: webhooks.mediaUrl(c.last) } })));
+        }
+        const remote = decodeURIComponent(parts[1] ?? "");
+        if (parts[0] === "chats" && parts.length === 3 && parts[2] === "read" && method === "POST") {
+          await lines.markChatRead(lineId, remote);
+          return sendJson(res, 200, { ok: true });
+        }
+        if (parts[0] === "contacts" && parts.length === 3 && parts[2] === "photo" && method === "GET") {
+          const jid = url.searchParams.get("jid") ?? undefined;
+          const photo = await lines.profilePicture(lineId, remote, jid && /^[\w.:-]+@(s\.whatsapp\.net|lid)$/.test(jid) ? jid : undefined);
+          if (!photo) {
+            // Sem foto (ou privada) não é erro: o painel mostra as iniciais.
+            res.writeHead(204, { "cache-control": "private, max-age=3600" });
+            return void res.end();
+          }
+          res.writeHead(302, { location: photo, "cache-control": "private, max-age=3600" });
+          return void res.end();
+        }
+      }
+
       if (parts[0] === "messages") {
         requirePerm(principal, lineId, "messages");
         if (parts.length === 1 && method === "GET") {
@@ -480,11 +504,16 @@ export const startServer = (deps: ServerDeps): http.Server => {
         if (parts.length === 3 && parts[2] === "media" && method === "GET") {
           const { view, data } = await lines.downloadMedia(lineId, decodeURIComponent(parts[1]));
           const fileName = view.media?.fileName ?? `${view.id}`;
+          const mime = view.media?.mimetype ?? "application/octet-stream";
+          // O arquivo vem do contato: só mídia comum abre no navegador; o resto (HTML, SVG…)
+          // é baixado, e o sandbox impede script na origem do painel.
+          const inline = /^(image\/(jpeg|png|gif|webp)|video\/|audio\/)/.test(mime);
           res.writeHead(200, {
-            "content-type": view.media?.mimetype ?? "application/octet-stream",
+            "content-type": mime,
             "content-length": data.length,
-            "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-            "cache-control": "private, max-age=3600",
+            "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+            "content-security-policy": "default-src 'none'; sandbox",
+            "cache-control": "private, max-age=86400",
             "x-content-type-options": "nosniff",
           });
           return void res.end(data);
@@ -544,8 +573,8 @@ const attachWebSockets = (
 
   lines.on("event", (e: LineEvent) => {
     // Mensagens só para quem tem a permissão; elas não mudam o estado da linha.
-    if (e.type === "message" || e.type === "message-status") {
-      const msg = { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
+    if (e.type === "message" || e.type === "message-status" || e.type === "chat-read") {
+      const msg = e.type === "chat-read" ? e : { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
       for (const [ws, p] of lineClients.get(e.lineId) ?? []) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       for (const [ws, p] of adminClients) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       return;

@@ -69,6 +69,7 @@ export class WebhookDispatcher {
         data = { id: e.message.id, remote: e.message.remote, status: e.message.status, timestamp: e.message.timestamp };
         break;
       case "busy": event = "call.busy"; data = { from: e.from }; break;
+      case "chat-read": return;
       case "line": {
         // "line" também sai a cada mudança de chamada; só interessa a troca de status.
         const prev = this.#lastStatus.get(e.lineId);

@@ -164,6 +164,8 @@ A aba **API** de cada linha no painel mostra os exemplos prontos com a URL certa
 | POST | `/api/v1/messages` | `{to, text}` ou `{to, type, url \| base64, caption?, fileName?, ptt?}` | envia mensagem (`replyTo` opcional) |
 | GET  | `/api/v1/messages/:id/media` | | baixa a mídia da mensagem |
 | POST | `/api/v1/messages/:id/read` | | marca como lida no WhatsApp |
+| GET  | `/api/v1/chats` | | conversas: última mensagem, nome e não lidas |
+| POST | `/api/v1/chats/:numero/read` | | marca a conversa como lida |
 | WS   | `/api/v1/events?token=` | | `hello`, `incoming`, `dialing`, `answered`, `connected`, `ended`, `busy`, `line`, `message`, `message-status` |
 | WS   | `/api/v1/media?token=&call=&clientId=` | | áudio PCM16 LE mono 16 kHz nos dois sentidos |
 
@@ -184,6 +186,12 @@ aparelho vinculado). Só conversas individuais: grupos, status e canais são ign
   para enviar como arquivo de áudio.
 - Mídia por `url` (o gateway baixa) ou `base64` (aceita `data:...;base64,`), até 25 MB.
 - O número segue a mesma regra das ligações: DDI+DDD+número, testando com e sem o 9º dígito.
+
+**No painel**, a aba **Mensagens** de cada telefone é um chat no estilo do WhatsApp: conversas com
+não lidas, fotos, vídeos, figurinhas, documentos, localização, contatos, áudio de voz (ouvir e
+gravar pelo microfone), respostas, reações e confirmação de leitura (✓✓ azul). Ela aparece para quem
+tem a permissão **Mensagens**. Só aparecem as mensagens recebidas ou enviadas depois desta versão:
+o histórico antigo do celular não é importado.
 
 **Webhook** (Configurações da linha › Webhook): o gateway faz um `POST` JSON para a sua URL a
 cada evento:

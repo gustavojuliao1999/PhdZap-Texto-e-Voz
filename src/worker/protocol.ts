@@ -63,7 +63,9 @@ export type OutgoingContent =
       ptt?: boolean;
       seconds?: number;
     }
-  | { type: "location"; latitude: number; longitude: number; name?: string; address?: string };
+  | { type: "location"; latitude: number; longitude: number; name?: string; address?: string }
+  /** Reação à mensagem citada (`quotedRaw`); texto vazio remove a reação. */
+  | { type: "reaction"; text: string };
 
 export type GatewayEvent =
   | { type: "incoming"; call: CallRecord }
@@ -85,7 +87,8 @@ export type WorkerCommand =
   | { cmd: "configure"; config: LineConfig }
   | { cmd: "send-message"; to: string; content: OutgoingContent; quotedRaw?: string }
   | { cmd: "download-media"; raw: string }
-  | { cmd: "mark-read"; raw: string }
+  | { cmd: "mark-read"; raws: string[] }
+  | { cmd: "profile-picture"; jid: string }
   | { cmd: "logout" };
 
 /** Principal -> worker */

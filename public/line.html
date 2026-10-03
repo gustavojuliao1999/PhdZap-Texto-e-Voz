@@ -6,6 +6,7 @@
 <title>Telefone · WhatsApp Voice Gateway</title>
 <link rel="stylesheet" href="/static/ui.css">
 <link rel="stylesheet" href="/static/admin.css">
+<link rel="stylesheet" href="/static/chat.css">
 <style>
   .line-header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   .line-header h2 { font-size: 22px; }
@@ -48,6 +49,8 @@
   .events { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; margin-top: 8px; font-size: 13.5px; }
   .events label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; }
   .events input { width: auto; }
+  #unreadBadge { background: var(--green); color: #0b141a; padding: 0 7px; margin-left: 4px; }
+  #unreadBadge::before { display: none; }
 </style>
 </head>
 <body>
@@ -69,6 +72,7 @@
   <nav class="tabs">
     <a href="/admin" class="muted" style="margin-right:6px">← Telefones</a>
     <a href="#telefone" data-tab="telefone">Telefone</a>
+    <a href="#mensagens" data-tab="mensagens">Mensagens <span class="badge" id="unreadBadge" hidden></span></a>
     <a href="#iframes" data-tab="iframes">Iframes</a>
     <a href="#javascript" data-tab="javascript">JavaScript</a>
     <a href="#api" data-tab="api">API</a>
@@ -109,6 +113,9 @@
       </table>
     </div>
   </section>
+
+  <!-- ───────────── Mensagens ───────────── -->
+  <section id="tab-mensagens" hidden><div id="chatRoot"></div></section>
 
   <!-- ───────────── Iframes ───────────── -->
   <section id="tab-iframes" hidden>
@@ -311,6 +318,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
 <script type="module">
 import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
 import { $, STATUS, api, act, toast, connectAdminEvents, callLabel, callResult, loadMe, renderNav } from "/static/admin.js";
+import { mountChat } from "/static/chat.js";
 
 const lineId = location.pathname.split("/").pop();
 let line = null;
@@ -320,20 +328,36 @@ let framesFor = "";   // linha+agente com que os iframes foram carregados
 const has = (perm) => !!line?.permissions?.includes(perm);
 
 // ─── abas (conforme permissões) ──────────────────────────────────────────
-const TABS = ["telefone", "iframes", "javascript", "api", "configuracoes"];
+const TABS = ["telefone", "mensagens", "iframes", "javascript", "api", "configuracoes"];
 const tabAllowed = (t) =>
-  t === "telefone" || (["iframes", "javascript", "api"].includes(t) ? has("integrations")
+  t === "telefone" || (t === "mensagens" ? has("messages") : ["iframes", "javascript", "api"].includes(t) ? has("integrations")
     : has("settings") || has("connection") || me.isAdmin);
 const showTab = () => {
   const wanted = location.hash.slice(1);
   const tab = TABS.includes(wanted) && tabAllowed(wanted) ? wanted : "telefone";
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
+  document.body.classList.toggle("chat-mode", tab === "mensagens");
+  if (tab === "mensagens" || has("messages")) chat.activate();
   document.querySelectorAll(".tabs a[data-tab]").forEach((a) => {
     a.hidden = !tabAllowed(a.dataset.tab);
     a.classList.toggle("active", a.dataset.tab === tab);
   });
 };
 window.addEventListener("hashchange", showTab);
+
+// ─── mensagens ───────────────────────────────────────────────────────────
+const chat = mountChat($("chatRoot"), {
+  lineId,
+  onUnread: (n) => { $("unreadBadge").hidden = !n; $("unreadBadge").textContent = n; },
+  canCall: () => has("dial"),
+  // Ligar a partir da conversa: abre o discador do painel já com o número.
+  onCall: (number) => {
+    location.hash = "#telefone";
+    if (line?.current) return toast("Já existe uma ligação nesta linha");
+    const agent = me.kind === "super" ? agentInput.value.trim() || "Super admin" : "";
+    $("dialerFrame").src = `/embed/dialer?line=${encodeURIComponent(lineId)}&number=${encodeURIComponent(number)}${agent ? `&agent=${encodeURIComponent(agent)}` : ""}`;
+  },
+});
 
 // ─── render ──────────────────────────────────────────────────────────────
 const agentInput = $("agentName");
@@ -387,6 +411,7 @@ const render = () => {
   } else {
     loadFrames();
   }
+  chat.setOnline(open);
   $("configForm").hidden = !has("settings");
   $("noSettings").hidden = has("settings");
   $("dangerZone").hidden = !(has("connection") || me.isAdmin);
@@ -613,6 +638,8 @@ connectAdminEvents((e) => {
     line = e.line; render();
   } else if (e.type === "line-removed" && e.lineId === lineId) {
     location.href = "/admin";
+  } else if (["message", "message-status", "chat-read"].includes(e.type) && e.lineId === lineId) {
+    chat.onEvent(e);
   } else if (e.type === "ended" && e.lineId === lineId) {
     history.unshift(e.call); renderHistory();
   }

@@ -76,6 +76,11 @@ export const parseOutgoing = async (b: any): Promise<OutgoingContent> => {
     return { type: "text", text };
   }
 
+  if (type === "reaction") {
+    const text = str(b.text ?? b.emoji ?? "", 32, "text") ?? "";
+    return { type: "reaction", text };
+  }
+
   if (type === "location") {
     const latitude = Number(b.latitude), longitude = Number(b.longitude);
     if (!Number.isFinite(latitude) || Math.abs(latitude) > 90 || !Number.isFinite(longitude) || Math.abs(longitude) > 180) {
@@ -85,7 +90,7 @@ export const parseOutgoing = async (b: any): Promise<OutgoingContent> => {
   }
 
   if (type !== undefined && !MEDIA_TYPES.includes(type)) {
-    throw new HttpError(400, `Campo 'type': use text, location ou ${MEDIA_TYPES.join(", ")}`);
+    throw new HttpError(400, `Campo 'type': use text, location, reaction ou ${MEDIA_TYPES.join(", ")}`);
   }
   const url = str(b.url, 4096, "url");
   const base64 = typeof b.base64 === "string" ? b.base64 : undefined;

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Prisma, type Call, type Line, type Message, type PrismaClient } from "@prisma/client";
@@ -82,6 +82,9 @@ const toMessageView = (m: Message): MessageView => {
   };
 };
 
+/** Conversa (contato) de uma linha. */
+export type ChatView = { remote: string; remoteJid: string; name?: string; unread: number; last: MessageView };
+
 const date = (iso?: string): Date | undefined => (iso ? new Date(iso) : undefined);
 
 /** Persistência: PostgreSQL (Prisma) + sessões do WhatsApp em arquivos dentro de DATA_DIR. */
@@ -91,6 +94,10 @@ export class Store {
   }
 
   authDirFor = (lineId: string): string => path.join(this.dataDir, "lines", lineId, "auth");
+
+  /** Arquivo de cache da mídia de uma mensagem (evita baixar do WhatsApp toda vez). */
+  mediaFileFor = (lineId: string, waId: string): string =>
+    path.join(this.dataDir, "lines", lineId, "media", createHash("sha1").update(waId).digest("hex"));
 
   /** Chave do super admin: env ADMIN_API_KEY ou gerada e salva em DATA_DIR/admin.json. */
   adminKey = (fromEnv?: string): { key: string; generated: boolean } => {
@@ -222,6 +229,51 @@ export class Store {
       take: Math.min(Math.max(opts.limit ?? 50, 1), 500),
     });
     return rows.map(toMessageView);
+  };
+
+  /** Conversas: última mensagem, nome do contato e não lidas. Mais recentes primeiro. */
+  listChats = async (lineId: string): Promise<ChatView[]> => {
+    const [last, names, unread] = await Promise.all([
+      this.db.$queryRaw<Message[]>`
+        SELECT DISTINCT ON ("remote") * FROM "Message"
+        WHERE "lineId" = ${lineId} AND "type" <> 'reaction'
+        ORDER BY "remote", "timestamp" DESC`,
+      this.db.$queryRaw<{ remote: string; pushName: string }[]>`
+        SELECT DISTINCT ON ("remote") "remote", "pushName" FROM "Message"
+        WHERE "lineId" = ${lineId} AND "pushName" IS NOT NULL
+        ORDER BY "remote", "timestamp" DESC`,
+      this.db.message.groupBy({
+        by: ["remote"],
+        where: { lineId, direction: "incoming", status: "delivered", type: { not: "reaction" } },
+        _count: { _all: true },
+      }),
+    ]);
+    const nameOf = new Map(names.map((n) => [n.remote, n.pushName]));
+    const unreadOf = new Map(unread.map((u) => [u.remote, u._count._all]));
+    return last
+      .map((m) => ({
+        remote: m.remote,
+        remoteJid: m.remoteJid,
+        name: nameOf.get(m.remote),
+        unread: unreadOf.get(m.remote) ?? 0,
+        last: toMessageView(m),
+      }))
+      .sort((a, b) => b.last.timestamp.localeCompare(a.last.timestamp));
+  };
+
+  /**
+   * Marca como lidas as mensagens recebidas de um contato (até `upTo`, se vier).
+   * Retorna o JSON bruto delas, para avisar o WhatsApp.
+   */
+  markRead = async (lineId: string, remote: string, upTo?: Date): Promise<string[]> => {
+    const where = {
+      lineId, remote, direction: "incoming", status: "delivered",
+      ...(upTo ? { timestamp: { lte: upTo } } : {}),
+    };
+    const rows = await this.db.message.findMany({ where, select: { id: true, raw: true }, orderBy: { timestamp: "desc" }, take: 300 });
+    if (!rows.length) return [];
+    await this.db.message.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: "read" } });
+    return rows.map((r) => r.raw).filter((r): r is string => !!r);
   };
 
   getMessage = async (lineId: string, waId: string): Promise<{ view: MessageView; raw: string | null } | null> => {

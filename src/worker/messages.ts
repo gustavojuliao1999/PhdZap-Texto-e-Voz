@@ -70,7 +70,13 @@ export class MessageService extends EventEmitter {
     const sock = this.#requireSock();
     const jid = await this.#resolveJid(to);
     const quoted = quotedRaw ? this.#parse(quotedRaw) : undefined;
-    const sent = await sock.sendMessage(jid, this.#build(content), quoted ? { quoted } : undefined);
+    let sent: any;
+    if (content.type === "reaction") {
+      if (!quoted?.key) throw new Error("Reação precisa da mensagem reagida");
+      sent = await sock.sendMessage(jid, { react: { text: content.text, key: quoted.key } });
+    } else {
+      sent = await sock.sendMessage(jid, this.#build(content), quoted ? { quoted } : undefined);
+    }
     const rec = await this.#toRecord(sent);
     if (!rec) throw new Error("Falha ao montar a mensagem enviada");
     // O retorno do sendMessage vem como PENDING; o servidor já aceitou.
@@ -89,9 +95,17 @@ export class MessageService extends EventEmitter {
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   };
 
-  markRead = async (raw: string): Promise<void> => {
-    const m = this.#parse(raw);
-    await this.#requireSock().readMessages([m.key]);
+  markRead = async (raws: string[]): Promise<void> => {
+    if (raws.length) await this.#requireSock().readMessages(raws.map((r) => this.#parse(r).key));
+  };
+
+  /** URL (temporária) da foto de perfil, ou null se não houver / for privada. */
+  profilePicture = async (jid: string): Promise<string | null> => {
+    try {
+      return (await this.#requireSock().profilePictureUrl(jid, "preview")) ?? null;
+    } catch {
+      return null;
+    }
   };
 
   // ─── interno ────────────────────────────────────────────────────────────
@@ -134,6 +148,7 @@ export class MessageService extends EventEmitter {
       case "audio":
         return { audio: Buffer.from(c.data), mimetype: c.mimetype, ptt: !!c.ptt, ...(c.seconds ? { seconds: c.seconds } : {}) };
       case "sticker": return { sticker: Buffer.from(c.data) };
+      case "reaction": throw new Error("reação é enviada à parte");
       case "document":
         return { document: Buffer.from(c.data), mimetype: c.mimetype, fileName: c.fileName ?? "arquivo", caption: c.caption };
       default:

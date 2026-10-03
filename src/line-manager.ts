@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "./log.js";
@@ -41,6 +42,8 @@ export type LineEvent =
   | { type: "busy"; lineId: string; from: string }
   | { type: "message"; lineId: string; message: MessageView }
   | { type: "message-status"; lineId: string; message: MessageView }
+  /** Conversa marcada como lida (zera o contador nos outros painéis). */
+  | { type: "chat-read"; lineId: string; remote: string }
   | { type: "line"; lineId: string; line: LinePublic };
 
 /** Visão da linha para quem tem só o token da linha (sem QR, sem segredos). */
@@ -282,6 +285,8 @@ export class LineRuntime extends EventEmitter {
  */
 export class LineManager extends EventEmitter {
   readonly #lines = new Map<string, LineRuntime>();
+  /** Fotos de perfil: lineId:remote -> URL (as URLs do WhatsApp expiram). */
+  readonly #photos = new Map<string, { url: string | null; at: number }>();
 
   constructor(private readonly store: Store) {
     super();
@@ -360,6 +365,7 @@ export class LineManager extends EventEmitter {
     const line = this.#require(id);
     if (line.wa.status !== "open") throw new HttpError(503, "WhatsApp desta linha não está conectado");
     let quotedRaw: string | undefined;
+    if (content.type === "reaction" && !opts.replyTo) throw new HttpError(400, "Reação precisa de 'replyTo' (a mensagem reagida)");
     if (opts.replyTo) {
       const quoted = await this.store.getMessage(id, opts.replyTo);
       if (!quoted?.raw) throw new HttpError(404, "Mensagem citada (replyTo) não encontrada");
@@ -368,6 +374,7 @@ export class LineManager extends EventEmitter {
     const { message, raw } = await line.request<{ message: MessageRecord; raw: string }>(
       { cmd: "send-message", to, content, quotedRaw },
     );
+    if ("data" in content) await this.#cacheMedia(id, message.id, content.data);
     const view = await this.store.insertMessage(id, message, raw, opts.agent);
     if (!view) return { ...message, lineId: id, agent: opts.agent }; // o evento do WhatsApp chegou antes
     this.emit("event", { type: "message", lineId: id, message: view } satisfies LineEvent);
@@ -380,17 +387,54 @@ export class LineManager extends EventEmitter {
     const found = await this.store.getMessage(id, waId);
     if (!found) throw new HttpError(404, "Mensagem não encontrada");
     if (!found.view.media || !found.raw) throw new HttpError(404, "Esta mensagem não tem mídia");
+    const file = this.store.mediaFileFor(id, waId);
+    const cached = await readFile(file).catch(() => null);
+    if (cached) return { view: found.view, data: cached };
     const data = await line.request<Uint8Array>({ cmd: "download-media", raw: found.raw });
+    await this.#cacheMedia(id, waId, data);
     return { view: found.view, data: Buffer.from(data.buffer, data.byteOffset, data.byteLength) };
   };
 
-  /** Marca a mensagem recebida (e as anteriores da conversa) como lida no WhatsApp. */
+  /** Marca como lida a mensagem recebida e as anteriores da mesma conversa. */
   markRead = async (id: string, waId: string): Promise<void> => {
-    const line = this.#require(id);
     const found = await this.store.getMessage(id, waId);
-    if (!found?.raw) throw new HttpError(404, "Mensagem não encontrada");
+    if (!found) throw new HttpError(404, "Mensagem não encontrada");
     if (found.view.direction !== "incoming") throw new HttpError(400, "Só mensagens recebidas podem ser marcadas como lidas");
-    await line.request({ cmd: "mark-read", raw: found.raw });
+    await this.markChatRead(id, found.view.remote, new Date(found.view.timestamp));
+  };
+
+  /** Marca a conversa como lida (no banco e no WhatsApp: o contato vê os ✓✓ azuis). */
+  markChatRead = async (id: string, remote: string, upTo?: Date): Promise<void> => {
+    const line = this.#require(id);
+    const raws = await this.store.markRead(id, remote, upTo);
+    if (!raws.length) return;
+    this.emit("event", { type: "chat-read", lineId: id, remote } satisfies LineEvent);
+    if (line.wa.status === "open") {
+      await line.request({ cmd: "mark-read", raws }).catch((err) => log.warn(`falha ao enviar confirmação de leitura: ${err.message}`));
+    }
+  };
+
+  /** URL da foto de perfil do contato (null se não houver). Guardada por 6 horas. */
+  profilePicture = async (id: string, remote: string, remoteJid?: string): Promise<string | null> => {
+    const line = this.#require(id);
+    const key = `${id}:${remote}`;
+    const hit = this.#photos.get(key);
+    if (hit && Date.now() - hit.at < 6 * 3_600_000) return hit.url;
+    if (line.wa.status !== "open") return hit?.url ?? null;
+    const jid = remoteJid ?? `${remote.replace(/\D/g, "")}@s.whatsapp.net`;
+    const url = await line.request<string | null>({ cmd: "profile-picture", jid }).catch(() => null);
+    this.#photos.set(key, { url, at: Date.now() });
+    return url;
+  };
+
+  #cacheMedia = async (id: string, waId: string, data: Uint8Array): Promise<void> => {
+    const file = this.store.mediaFileFor(id, waId);
+    try {
+      mkdirSync(path.dirname(file), { recursive: true });
+      await writeFile(file, data);
+    } catch (err: any) {
+      log.warn(`falha ao guardar mídia em cache: ${err.message}`);
+    }
   };
 
   #add = (config: LineConfig): LineRuntime => {

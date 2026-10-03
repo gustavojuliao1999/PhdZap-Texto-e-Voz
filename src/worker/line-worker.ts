@@ -104,7 +104,8 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
       return messages.send(c.to, c.content, c.quotedRaw);
     }
     case "download-media": return messages.download(c.raw);
-    case "mark-read": return messages.markRead(c.raw);
+    case "mark-read": return messages.markRead(c.raws);
+    case "profile-picture": return messages.profilePicture(c.jid);
     case "logout": {
       await whatsapp.logout();
       // O stack WASM não reinicializa no mesmo processo: o principal sobe outro.
