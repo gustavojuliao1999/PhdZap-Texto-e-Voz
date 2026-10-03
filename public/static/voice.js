@@ -3,6 +3,10 @@
 
 export const params = new URLSearchParams(location.search);
 export const lineToken = params.get("token") ?? "";
+/** Modo painel: em vez do token, usa o login (cookie) + id da linha. */
+export const lineId = params.get("line") ?? "";
+const authHeaders = () => (lineToken ? { authorization: `Bearer ${lineToken}` } : { "x-line-id": lineId });
+const authQuery = () => (lineToken ? { token: lineToken } : { line: lineId });
 export const agentName = (params.get("agent") ?? "").slice(0, 60);
 
 /** Identifica este iframe/aba (o "primeiro a atender" é por cliente). */
@@ -16,7 +20,7 @@ export const clientId = (() => {
 export const api = async (method, path, body) => {
   const res = await fetch(`/api/v1${path}`, {
     method,
-    headers: { authorization: `Bearer ${lineToken}`, "content-type": "application/json" },
+    headers: { ...authHeaders(), "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
@@ -25,7 +29,7 @@ export const api = async (method, path, body) => {
 };
 
 const wsUrl = (path, extra = {}) => {
-  const q = new URLSearchParams({ token: lineToken, ...extra });
+  const q = new URLSearchParams({ ...authQuery(), ...extra });
   return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}?${q}`;
 };
 

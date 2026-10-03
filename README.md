@@ -2,8 +2,9 @@
 
 Central de ligações de voz do WhatsApp sobre o [`baileys-caller`](../baileys-caller):
 
-- **Painel admin** protegido por chave de acesso: várias **linhas** (telefones), cada uma
-  com QR de pareamento, **token próprio** e configurações.
+- **Painel** com login de usuários, **grupos e permissões por telefone**: várias **linhas**
+  (telefones), cada uma com QR de pareamento, **token próprio** e configurações.
+- **PostgreSQL + Prisma** e **Docker Compose** prontos.
 - **Iframes** para colocar em qualquer site:
   - **Receptor**: a ligação toca em todos os atendentes; **o primeiro a atender fica na ligação**.
   - **Discador**: faz ligações pela linha.
@@ -22,22 +23,62 @@ navegador/site ──iframes/API──┐
 Cada linha roda num processo separado (o stack de voz do WhatsApp só permite uma
 instância por processo). Se uma linha cair, ela é reiniciada sozinha sem afetar as outras.
 
-## Rodando
+## Rodando com Docker (recomendado)
 
-Requisitos: Node.js ≥ 20, `ffmpeg` no PATH e o `../baileys-caller` compilado (`npm run build` lá).
+Requisitos: Docker com Compose. A pasta `../baileys-caller` precisa estar ao lado deste projeto,
+porque o build a usa como contexto extra.
+
+```bash
+cp .env.example .env
+# edite o .env: ADMIN_API_KEY (super admin) e POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+Abra **http://localhost:3000/**, clique em **Entrar com chave de acesso** e use a `ADMIN_API_KEY`.
+
+- `db`: PostgreSQL 16, com dados no volume `pgdata`.
+- `app`: o gateway. As migrações do banco são aplicadas sozinhas ao iniciar. As sessões do WhatsApp
+  ficam no volume `appdata` (`/data`). **Não apague esse volume**, senão será preciso ler o QR de novo.
+- Logs: `docker compose logs -f app` · diagnóstico de chamadas: `VOIP_DEBUG=1` no `.env`.
+
+## Rodando sem Docker (desenvolvimento)
+
+Requisitos: Node.js ≥ 20, `ffmpeg` no PATH, `../baileys-caller` compilado (`npm run build` lá) e um
+PostgreSQL. O do compose serve: `docker compose up -d db`.
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env          # ajuste DATABASE_URL e ADMIN_API_KEY
+npm run db:migrate            # cria as tabelas
 npm start
 ```
 
-No primeiro start, a **chave de acesso** aparece no terminal (e fica salva em `data/admin.json`),
-a menos que você defina `ADMIN_API_KEY` no `.env`. Abra **http://127.0.0.1:3000/**, entre com
-a chave, clique em **+ Nova linha** e escaneie o QR no WhatsApp (**Aparelhos conectados**).
+Ao iniciar pela primeira vez, os dados da versão anterior (`data/lines.json`, `data/calls.jsonl`
+e a pasta `./auth`) são importados para o banco automaticamente.
 
-> Se você usava a versão anterior (pasta `./auth`), a sessão é migrada automaticamente para uma
-> linha chamada "Principal". Pare a versão antiga antes de iniciar esta.
+## Usuários, grupos e permissões
+
+- **Super admin:** entra com a `ADMIN_API_KEY` do `.env` e tem acesso total. Use-o para criar os
+  primeiros usuários.
+- **Usuários** entram com usuário e senha (o hash é scrypt). Um usuário marcado como
+  **administrador** gerencia telefones, usuários e grupos e tem acesso a todos os telefones.
+- **Grupos** recebem permissões **por telefone**. Um usuário pode estar em vários grupos e as
+  permissões se somam:
+
+| Permissão | O que libera |
+|---|---|
+| Ver | o telefone e o histórico dele |
+| Receber | atender e recusar ligações |
+| Ligar | fazer ligações |
+| Conectar | ler o QR, desconectar e reiniciar o telefone |
+| Configurar | alterar as configurações do telefone |
+| Integrações | ver o token, os códigos de iframe/SDK e a API, e gerar um novo token |
+
+  Há perfis prontos na tela de grupos: Atendente (ver, receber, ligar), Só receber, Supervisor
+  (+ conectar), Gerente (tudo) e Só ver.
+- No painel, os iframes de atendimento usam o **login** do usuário, não o token da linha. Assim,
+  um atendente nunca vê o token. Ele atende e liga com o próprio nome, que aparece no histórico.
+- Trocar a senha ou desativar um usuário encerra as sessões dele. Mudanças de permissão valem na hora.
 
 ## Incorporando em outro site
 
@@ -148,4 +189,4 @@ que são muito verbosos.
   (evento `busy`). Para atender várias ao mesmo tempo, crie mais linhas.
 - Só voz 1:1. Sem vídeo e sem grupos.
 - Use um número dedicado por linha. Ligações feitas pelo celular do mesmo número disputam a conta.
-- `data/` contém as sessões do WhatsApp e os tokens. Trate como credencial.
+- `data/` (ou o volume `appdata`) contém as sessões do WhatsApp. Trate como credencial, junto com o banco.

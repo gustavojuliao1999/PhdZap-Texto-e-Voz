@@ -49,11 +49,9 @@
 </head>
 <body>
 <header>
-  <a href="/admin" class="back">← Telefones</a>
   <h1>📞 WhatsApp Voice Gateway</h1>
   <span class="badge" id="live">conectando…</span>
-  <span class="spacer"></span>
-  <button class="ghost" id="logoutBtn">Sair</button>
+  <nav id="nav"></nav>
 </header>
 
 <main>
@@ -66,6 +64,7 @@
   </div>
 
   <nav class="tabs">
+    <a href="/admin" class="muted" style="margin-right:6px">← Telefones</a>
     <a href="#telefone" data-tab="telefone">Telefone</a>
     <a href="#iframes" data-tab="iframes">Iframes</a>
     <a href="#javascript" data-tab="javascript">JavaScript</a>
@@ -89,13 +88,13 @@
     </div>
 
     <div id="phoneArea">
-      <div class="agent-row">
+      <div class="agent-row" id="agentRow">
         <label for="agentName" style="margin:0">Seu nome como atendente</label>
         <input id="agentName" maxlength="60">
       </div>
       <div class="phones">
-        <div class="card phone-box"><h3>Receber</h3><iframe id="receiverFrame" allow="microphone; autoplay" title="Receber ligações"></iframe></div>
-        <div class="card phone-box"><h3>Ligar</h3><iframe id="dialerFrame" allow="microphone; autoplay" title="Fazer ligações"></iframe></div>
+        <div class="card phone-box" id="receiverBox"><h3>Receber</h3><iframe id="receiverFrame" allow="microphone; autoplay" title="Receber ligações"></iframe></div>
+        <div class="card phone-box" id="dialerBox"><h3>Ligar</h3><iframe id="dialerFrame" allow="microphone; autoplay" title="Fazer ligações"></iframe></div>
       </div>
     </div>
 
@@ -215,6 +214,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
   <!-- ───────────── Configurações ───────────── -->
   <section id="tab-configuracoes" hidden>
     <div class="stack">
+      <div class="card muted" id="noSettings" hidden>Você não tem permissão para alterar as configurações deste telefone.</div>
       <form class="card" id="configForm" autocomplete="off">
         <label for="fName" style="margin-top:0">Nome da linha</label>
         <input id="fName" maxlength="60" required>
@@ -267,7 +267,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         <div class="row" style="margin-top:18px"><button class="green" type="submit">Salvar</button></div>
       </form>
 
-      <div class="card danger-zone">
+      <div class="card danger-zone" id="dangerZone">
         <h4 style="margin-top:0">Ações da linha</h4>
         <div class="row">
           <button class="ghost" id="restartBtn">Reiniciar linha</button>
@@ -285,22 +285,30 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
 
 <script type="module">
 import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
-import { $, STATUS, api, act, toast, connectAdminEvents, logout, callLabel, callResult } from "/static/admin.js";
+import { $, STATUS, api, act, toast, connectAdminEvents, callLabel, callResult, loadMe, renderNav } from "/static/admin.js";
 
 const lineId = location.pathname.split("/").pop();
 let line = null;
+let me = { isAdmin: false, kind: "user" };
 let history = [];
-let framesFor = "";   // token+agente com que os iframes foram carregados
+let framesFor = "";   // linha+agente com que os iframes foram carregados
+const has = (perm) => !!line?.permissions?.includes(perm);
 
-// ─── abas ────────────────────────────────────────────────────────────────
+// ─── abas (conforme permissões) ──────────────────────────────────────────
 const TABS = ["telefone", "iframes", "javascript", "api", "configuracoes"];
+const tabAllowed = (t) =>
+  t === "telefone" || (["iframes", "javascript", "api"].includes(t) ? has("integrations")
+    : has("settings") || has("connection") || me.isAdmin);
 const showTab = () => {
-  const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "telefone";
+  const wanted = location.hash.slice(1);
+  const tab = TABS.includes(wanted) && tabAllowed(wanted) ? wanted : "telefone";
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
-  document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
+  document.querySelectorAll(".tabs a[data-tab]").forEach((a) => {
+    a.hidden = !tabAllowed(a.dataset.tab);
+    a.classList.toggle("active", a.dataset.tab === tab);
+  });
 };
 window.addEventListener("hashchange", showTab);
-showTab();
 
 // ─── render ──────────────────────────────────────────────────────────────
 const agentInput = $("agentName");
@@ -310,17 +318,21 @@ agentInput.addEventListener("change", () => {
   loadFrames(true);
 });
 
+/** Os iframes do painel usam o login (?line=), não o token: funciona para quem não vê o token. */
 const loadFrames = (force = false) => {
   if (!line) return;
-  const agent = agentInput.value.trim() || "Admin";
-  const key = `${line.token}|${agent}`;
+  // Usuários atendem com o próprio nome; o super admin escolhe.
+  const agent = me.kind === "super" ? agentInput.value.trim() || "Super admin" : "";
+  const key = `${line.id}|${agent}|${has("receive")}|${has("dial")}`;
   if (!force && key === framesFor) return;
   // Não recarrega no meio de uma ligação (cortaria o áudio).
   if (framesFor && line.current) return;
   framesFor = key;
-  const q = `token=${encodeURIComponent(line.token)}&agent=${encodeURIComponent(agent)}`;
-  $("receiverFrame").src = `/embed/receiver?${q}`;
-  $("dialerFrame").src = `/embed/dialer?${q}`;
+  const q = `line=${encodeURIComponent(line.id)}${agent ? `&agent=${encodeURIComponent(agent)}` : ""}`;
+  $("receiverBox").hidden = !has("receive");
+  $("dialerBox").hidden = !has("dial");
+  $("receiverFrame").src = has("receive") ? `/embed/receiver?${q}` : "about:blank";
+  $("dialerFrame").src = has("dial") ? `/embed/dialer?${q}` : "about:blank";
 };
 
 const render = () => {
@@ -334,16 +346,29 @@ const render = () => {
   const open = line.status === "open";
   $("pairing").hidden = open;
   $("phoneArea").hidden = !open;
+  $("agentRow").hidden = me.kind !== "super";
   if (!open) {
     const qr = $("qr");
-    if (line.status === "qr" && line.qrSvg) { qr.className = "qr"; qr.innerHTML = line.qrSvg; }
-    else { qr.className = "qr loading"; qr.textContent = line.status === "error" ? "Reconectando…" : "Gerando QR…"; }
-    $("pairTitle").textContent = line.status === "qr" ? "Escaneie para conectar o WhatsApp desta linha" : "Conectando ao WhatsApp…";
-    $("pairErr").textContent = line.error ?? "";
+    if (!has("connection")) {
+      qr.className = "qr loading"; qr.textContent = "📵";
+      $("pairTitle").textContent = "Telefone desconectado";
+      $("pairErr").textContent = "Peça a quem administra este telefone para conectá-lo (ler o QR).";
+    } else {
+      if (line.status === "qr" && line.qrSvg) { qr.className = "qr"; qr.innerHTML = line.qrSvg; }
+      else { qr.className = "qr loading"; qr.textContent = line.status === "error" ? "Reconectando…" : "Gerando QR…"; }
+      $("pairTitle").textContent = line.status === "qr" ? "Escaneie para conectar o WhatsApp desta linha" : "Conectando ao WhatsApp…";
+      $("pairErr").textContent = line.error ?? "";
+    }
   } else {
     loadFrames();
   }
-  fillDocs();
+  $("configForm").hidden = !has("settings");
+  $("noSettings").hidden = has("settings");
+  $("dangerZone").hidden = !(has("connection") || me.isAdmin);
+  $("restartBtn").hidden = $("disconnectBtn").hidden = !has("connection");
+  $("deleteBtn").hidden = !me.isAdmin;
+  showTab();
+  if (has("integrations")) fillDocs();
 };
 
 const renderHistory = () => {
@@ -358,6 +383,7 @@ const renderHistory = () => {
 };
 
 const fillForm = () => {
+  if (!has("settings")) return;
   $("fName").value = line.name;
   $("fInbound").value = line.inboundMode;
   $("fHandler").value = line.handler === "browser" ? "silence" : line.handler;
@@ -491,9 +517,10 @@ $("deleteBtn").onclick = act(async () => {
   await api("DELETE", `/lines/${lineId}`);
   location.href = "/admin";
 });
-$("logoutBtn").onclick = act(logout);
-
 // ─── dados ao vivo ───────────────────────────────────────────────────────
+me = await loadMe().catch((e) => { toast(e.message); return me; });
+renderNav(me, "lines");
+
 connectAdminEvents((e) => {
   if (e.type === "lines") {
     line = e.lines.find((l) => l.id === lineId);
@@ -508,7 +535,7 @@ connectAdminEvents((e) => {
   }
 }, $("live"));
 
-api("GET", "/calls").then((h) => { history = h.filter((c) => c.lineId === lineId); renderHistory(); }).catch((e) => toast(e.message));
+api("GET", `/calls?line=${encodeURIComponent(lineId)}`).then((h) => { history = h; renderHistory(); }).catch((e) => toast(e.message));
 </script>
 </body>
 </html>

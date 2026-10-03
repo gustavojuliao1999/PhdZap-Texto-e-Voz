@@ -11,36 +11,61 @@
   .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .logo span { width: 34px; height: 34px; border-radius: 9px; background: var(--green-dark); display: grid; place-items: center; font-size: 18px; }
   h1 { font-size: 19px; }
-  p { margin: 4px 0 18px; font-size: 14px; }
-  button { width: 100%; margin-top: 16px; padding: 12px; }
+  p { margin: 4px 0 14px; font-size: 14px; }
+  button[type=submit] { width: 100%; margin-top: 18px; padding: 12px; }
   #err { color: var(--red); font-size: 13px; min-height: 18px; margin-top: 10px; }
+  .switch { display: block; margin: 14px auto 0; background: none; color: var(--muted); font-weight: 500; font-size: 13px; padding: 4px; }
+  .switch:hover { color: var(--text); filter: none; }
 </style>
 </head>
 <body>
-  <form class="card" id="form" autocomplete="off">
+  <form class="card" id="form" autocomplete="on">
     <div class="logo"><span>📞</span><h1>WhatsApp Voice Gateway</h1></div>
-    <p class="muted">Informe a chave de acesso do sistema.</p>
-    <label for="key">Chave de acesso</label>
-    <input id="key" type="password" placeholder="wva_…" required autofocus>
+    <p class="muted" id="subtitle">Entre com seu usuário e senha.</p>
+
+    <div id="userFields">
+      <label for="username">Usuário</label>
+      <input id="username" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
+      <label for="password">Senha</label>
+      <input id="password" type="password" autocomplete="current-password">
+    </div>
+    <div id="keyFields" hidden>
+      <label for="key">Chave de acesso (super admin)</label>
+      <input id="key" type="password" autocomplete="off" placeholder="ADMIN_API_KEY">
+    </div>
+
     <button class="green" id="btn" type="submit">Entrar</button>
     <div id="err" role="alert"></div>
+    <button type="button" class="switch" id="switchBtn">Entrar com chave de acesso</button>
   </form>
 <script>
-  const form = document.getElementById("form"), btn = document.getElementById("btn"), err = document.getElementById("err");
-  form.addEventListener("submit", async (e) => {
+  const $ = (id) => document.getElementById(id);
+  let keyMode = false;
+  $("switchBtn").onclick = () => {
+    keyMode = !keyMode;
+    $("userFields").hidden = keyMode;
+    $("keyFields").hidden = !keyMode;
+    $("subtitle").textContent = keyMode ? "Acesso de super admin pela chave do .env." : "Entre com seu usuário e senha.";
+    $("switchBtn").textContent = keyMode ? "Entrar com usuário e senha" : "Entrar com chave de acesso";
+    $("err").textContent = "";
+    (keyMode ? $("key") : $("username")).focus();
+  };
+  $("form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    btn.disabled = true; err.textContent = "";
+    $("btn").disabled = true; $("err").textContent = "";
+    const body = keyMode
+      ? { key: $("key").value }
+      : { username: $("username").value, password: $("password").value };
     try {
       const res = await fetch("/admin/api/session", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ key: document.getElementById("key").value }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `Erro ${res.status}`);
       location.href = "/admin";
     } catch (ex) {
-      err.textContent = ex.message;
-      btn.disabled = false;
+      $("err").textContent = ex.message;
+      $("btn").disabled = false;
     }
   });
 </script>

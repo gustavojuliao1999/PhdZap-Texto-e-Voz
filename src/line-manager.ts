@@ -14,7 +14,6 @@ import {
 // LINE_WORKER_ENTRY permite trocar o worker (testes).
 const WORKER_ENTRY = process.env.LINE_WORKER_ENTRY || fileURLToPath(new URL("./worker/line-worker.ts", import.meta.url));
 const REQUEST_TIMEOUT_MS = 45_000;
-const HISTORY_LIMIT = 1000;
 
 /** Chamada como vista pelos clientes: registro do worker + linha + quem atendeu. */
 export type CallView = CallRecord & {
@@ -23,6 +22,8 @@ export type CallView = CallRecord & {
   /** Cliente (iframe/navegador) que ficou com a chamada. */
   ownerClientId?: string;
   ownerAgent?: string;
+  /** Usuário do painel que ficou com a chamada (quando não foi pelo token). */
+  ownerUserId?: string;
 };
 
 /** Evento publicado para os WebSockets (de uma linha e do admin). */
@@ -141,7 +142,10 @@ export class LineRuntime extends EventEmitter {
   };
 
   /** Liga; se `clientId` vier, a chamada já nasce pertencendo a esse cliente (discador). */
-  dial = async (to: string, opts: { handler?: string; clientId?: string; agent?: string } = {}): Promise<CallView> => {
+  dial = async (
+    to: string,
+    opts: { handler?: string; clientId?: string; agent?: string; userId?: string } = {},
+  ): Promise<CallView> => {
     if (this.current) throw new HttpError(409, "Linha ocupada: já existe uma chamada");
     if (this.wa.status !== "open") throw new HttpError(503, "WhatsApp desta linha não está conectado");
     const record = await this.request<CallRecord>({ cmd: "dial", to, handler: opts.handler });
@@ -154,6 +158,7 @@ export class LineRuntime extends EventEmitter {
       lineName: this.config.name,
       ownerClientId: opts.clientId,
       ownerAgent: opts.agent,
+      ownerUserId: opts.userId,
     };
     if (view.status !== "ended" && !this.#recentlyEnded.includes(view.id)) {
       this.current = view;
@@ -170,7 +175,7 @@ export class LineRuntime extends EventEmitter {
    * Reserva a chamada para um cliente (o primeiro a atender leva).
    * Lança 409 se outro cliente já pegou.
    */
-  claim = (callId: string, clientId: string, agent?: string): CallView => {
+  claim = (callId: string, clientId: string, agent?: string, userId?: string): CallView => {
     const call = this.current;
     if (!call || call.id !== callId) throw new HttpError(404, "Chamada não encontrada ou já encerrada");
     if (call.ownerClientId && call.ownerClientId !== clientId) {
@@ -179,6 +184,7 @@ export class LineRuntime extends EventEmitter {
     if (!call.ownerClientId) {
       call.ownerClientId = clientId;
       call.ownerAgent = agent;
+      call.ownerUserId = userId;
       this.emit("event", { type: "answered", lineId: this.config.id, call } satisfies LineEvent);
     }
     return call;
@@ -189,6 +195,7 @@ export class LineRuntime extends EventEmitter {
     if (call?.id === callId && call.ownerClientId === clientId && call.status === "ringing") {
       call.ownerClientId = undefined;
       call.ownerAgent = undefined;
+      call.ownerUserId = undefined;
     }
   };
 
@@ -229,6 +236,7 @@ export class LineRuntime extends EventEmitter {
       lineName: this.config.name,
       ownerClientId: prev?.ownerClientId,
       ownerAgent: prev?.ownerAgent,
+      ownerUserId: prev?.ownerUserId,
     };
     if (e.type === "ended") { this.#finishCall(view); return; }
     this.current = view;
@@ -260,45 +268,45 @@ export class LineRuntime extends EventEmitter {
  */
 export class LineManager extends EventEmitter {
   readonly #lines = new Map<string, LineRuntime>();
-  readonly #history: CallView[];
 
   constructor(private readonly store: Store) {
     super();
-    this.#history = store.loadCalls();
   }
 
   get lines(): LineRuntime[] { return [...this.#lines.values()]; }
-  get history(): CallView[] { return this.#history; }
 
   get = (id: string): LineRuntime | undefined => this.#lines.get(id);
   byToken = (token: string): LineRuntime | undefined =>
     token ? this.lines.find((l) => l.config.token === token) : undefined;
 
-  startAll = (): void => {
-    for (const config of this.store.loadLines()) this.#add(config).start();
+  startAll = async (): Promise<void> => {
+    for (const config of await this.store.listLines()) this.#add(config).start();
   };
 
-  create = (name: string, patch: Partial<LineConfig> = {}): LineRuntime => {
+  create = async (name: string, patch: Partial<LineConfig> = {}): Promise<LineRuntime> => {
     const config = { ...this.store.newLine(name), ...sanitizePatch(patch) };
+    await this.store.insertLine(config);
     const line = this.#add(config);
-    this.#save();
     line.start();
+    this.emit("event", { type: "line", lineId: config.id, line: line.publicInfo } satisfies LineEvent);
     return line;
   };
 
   update = async (id: string, patch: Partial<LineConfig>): Promise<LineRuntime> => {
     const line = this.#require(id);
-    line.config = { ...line.config, ...sanitizePatch(patch) };
-    this.#save();
+    const config = { ...line.config, ...sanitizePatch(patch) };
+    await this.store.updateLine(config);
+    line.config = config;
     if (line.running) await line.request({ cmd: "configure", config: line.config }).catch(() => {});
     this.emit("event", { type: "line", lineId: id, line: line.publicInfo } satisfies LineEvent);
     return line;
   };
 
-  rotateToken = (id: string, token: string): LineRuntime => {
+  rotateToken = async (id: string, token: string): Promise<LineRuntime> => {
     const line = this.#require(id);
-    line.config = { ...line.config, token };
-    this.#save();
+    const config = { ...line.config, token };
+    await this.store.updateLine(config);
+    line.config = config;
     this.emit("token-rotated", id);
     return line;
   };
@@ -322,7 +330,7 @@ export class LineManager extends EventEmitter {
     await line.stop();
     line.removeAllListeners();
     this.#lines.delete(id);
-    this.#save();
+    await this.store.deleteLine(id);
     rmSync(path.dirname(this.store.authDirFor(id)), { recursive: true, force: true });
     this.emit("removed", id);
   };
@@ -336,9 +344,7 @@ export class LineManager extends EventEmitter {
     line.on("wa", () => this.emit("wa", config.id));
     line.on("audio", (callId: string, pcm: Buffer) => this.emit("audio", config.id, callId, pcm));
     line.on("ended-call", (view: CallView) => {
-      this.#history.unshift(view);
-      if (this.#history.length > HISTORY_LIMIT) this.#history.pop();
-      this.store.appendCall(view);
+      this.store.appendCall(view).catch((err) => log.error(`falha ao gravar ligação no histórico: ${err.message}`));
     });
     return line;
   };
@@ -348,8 +354,6 @@ export class LineManager extends EventEmitter {
     if (!line) throw new HttpError(404, "Linha não encontrada");
     return line;
   };
-
-  #save = (): void => this.store.saveLines(this.lines.map((l) => l.config));
 }
 
 const INBOUND = ["manual", "auto", "reject"];

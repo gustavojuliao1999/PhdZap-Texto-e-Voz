@@ -51,3 +51,22 @@ export const callLabel = (c) =>
 
 export const callResult = (c) =>
   c.connectedAt ? "atendida" : c.endReason === "rejected" ? "recusada" : c.direction === "incoming" ? "não atendida" : "sem resposta";
+
+/** Usuário logado: { kind, name, username, isAdmin, permissions, permissionLabels }. */
+export const loadMe = () => api("GET", "/me");
+
+/** Preenche <nav id="nav"> no cabeçalho com os links conforme o perfil. */
+export const renderNav = (me, active) => {
+  const nav = document.getElementById("nav");
+  if (!nav) return;
+  const link = (href, label, key) => `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
+  nav.innerHTML = `
+    ${link("/admin", "Telefones", "lines")}
+    ${me.isAdmin ? link("/admin/users", "Usuários e grupos", "users") : ""}
+    <span class="spacer"></span>
+    <span class="me" title="${me.kind === "super" ? "Entrou com a chave de acesso" : esc(me.username ?? "")}">
+      ${me.kind === "super" ? "👑 " : "👤 "}${esc(me.name)}${me.isAdmin && me.kind !== "super" ? " · admin" : ""}
+    </span>
+    <button class="ghost small" id="navLogout">Sair</button>`;
+  document.getElementById("navLogout").onclick = act(logout);
+};

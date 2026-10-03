@@ -15,3 +15,9 @@ th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .history-wrap { overflow-x: auto; }
+#nav { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+#nav a { color: var(--muted); text-decoration: none; padding: 7px 11px; border-radius: 8px; font-weight: 600; font-size: 14px; white-space: nowrap; }
+#nav a:hover { color: var(--text); background: var(--panel-2); }
+#nav a.active { color: var(--text); background: var(--panel-2); }
+#nav .spacer { flex: 1; }
+#nav .me { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

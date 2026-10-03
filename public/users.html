@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usuários e grupos · WhatsApp Voice Gateway</title>
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  .grid { display: grid; grid-template-columns: 1fr; gap: 28px; }
+  .section-title .spacer { flex: 1; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; background: var(--panel-2); margin: 1px 2px 1px 0; }
+  .tag.admin { background: rgba(245,165,36,.15); color: var(--amber); }
+  .tag.off { background: rgba(229,72,77,.15); color: var(--red); }
+  td .row { flex-wrap: nowrap; justify-content: flex-end; }
+  .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .group-card h3 { font-size: 16px; }
+  .group-card .lines { margin: 10px 0 0; font-size: 13px; display: grid; gap: 4px; }
+  .empty { text-align: center; padding: 26px; color: var(--muted); }
+
+  dialog {
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text);
+    padding: 0; width: min(760px, 96vw); max-height: 92vh;
+  }
+  dialog::backdrop { background: rgba(5, 8, 10, .7); }
+  .modal-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  .modal-head h2 { font-size: 16px; flex: 1; }
+  .modal-body { padding: 16px 20px 20px; overflow-y: auto; max-height: calc(92vh - 130px); }
+  .modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid var(--line); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  .check { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; color: var(--text); font-size: 14px; cursor: pointer; }
+  .check input { width: auto; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 12px; max-height: 180px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .matrix th, .matrix td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: center; }
+  .matrix th:first-child, .matrix td:first-child { text-align: left; }
+  .matrix th { font-size: 11px; text-transform: none; letter-spacing: 0; line-height: 1.25; }
+  .matrix input { width: 16px; height: 16px; }
+  .matrix select { padding: 4px 6px; font-size: 12px; width: auto; }
+  .matrix-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 WhatsApp Voice Gateway</h1>
+  <nav id="nav"></nav>
+</header>
+
+<main class="grid">
+  <section>
+    <div class="section-title"><h2>Usuários</h2><span class="spacer"></span><button class="green" id="newUserBtn">+ Novo usuário</button></div>
+    <div class="card history-wrap">
+      <table>
+        <thead><tr><th>Nome</th><th>Usuário</th><th>Grupos</th><th>Perfil</th><th>Último acesso</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title"><h2>Grupos</h2><span class="spacer"></span><button class="green" id="newGroupBtn">+ Novo grupo</button></div>
+    <div class="hint" style="margin:-6px 0 12px">As permissões nos telefones são dadas aos grupos. Um usuário pode estar em vários grupos; as permissões se somam.</div>
+    <div class="groups" id="groups"></div>
+  </section>
+</main>
+
+<!-- Usuário -->
+<dialog id="userDlg">
+  <form method="dialog" id="userForm" autocomplete="off">
+    <div class="modal-head"><h2 id="userTitle">Novo usuário</h2><button type="button" class="ghost small" data-close>Fechar</button></div>
+    <div class="modal-body">
+      <div class="grid2">
+        <div><label for="uName">Nome</label><input id="uName" maxlength="80" required></div>
+        <div><label for="uUsername">Usuário (login)</label><input id="uUsername" maxlength="40" required autocapitalize="none" spellcheck="false" placeholder="maria.silva"></div>
+      </div>
+      <label for="uPassword">Senha</label>
+      <input id="uPassword" type="password" minlength="8" autocomplete="new-password">
+      <div class="hint" id="uPasswordHint">Mínimo de 8 caracteres.</div>
+      <label class="check"><input type="checkbox" id="uAdmin"> Administrador (gerencia telefones, usuários e grupos; acesso total)</label>
+      <label class="check"><input type="checkbox" id="uActive" checked> Ativo (pode entrar no sistema)</label>
+      <label>Grupos</label>
+      <div class="checklist" id="uGroups"></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="red" id="userDelete" style="margin-right:auto">Excluir usuário</button>
+      <button type="button" class="ghost" data-close>Cancelar</button>
+      <button type="submit" class="green">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Grupo -->
+<dialog id="groupDlg">
+  <form method="dialog" id="groupForm" autocomplete="off">
+    <div class="modal-head"><h2 id="groupTitle">Novo grupo</h2><button type="button" class="ghost small" data-close>Fechar</button></div>
+    <div class="modal-body">
+      <div class="grid2">
+        <div><label for="gName">Nome do grupo</label><input id="gName" maxlength="60" required placeholder="Atendimento"></div>
+        <div><label for="gDesc">Descrição</label><input id="gDesc" maxlength="200" placeholder="opcional"></div>
+      </div>
+      <label>Membros</label>
+      <div class="checklist" id="gMembers"></div>
+      <label>Permissões por telefone</label>
+      <div class="matrix-wrap"><table class="matrix" id="gMatrix"></table></div>
+      <div class="hint">Use o atalho de cada linha para aplicar um perfil pronto, ou marque individualmente. Qualquer permissão inclui “ver”.</div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="red" id="groupDelete" style="margin-right:auto">Excluir grupo</button>
+      <button type="button" class="ghost" data-close>Cancelar</button>
+      <button type="submit" class="green">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+import { esc } from "/static/voice.js";
+import { $, api, act, toast, loadMe, renderNav } from "/static/admin.js";
+
+let me, users = [], groups = [], lines = [];
+let editingUser = null, editingGroup = null;
+
+const PRESETS = {
+  "": [],
+  atendente: ["view", "receive", "dial"],
+  receptor: ["view", "receive"],
+  supervisor: ["view", "receive", "dial", "connection"],
+  gerente: ["view", "receive", "dial", "connection", "settings", "integrations"],
+  leitura: ["view"],
+};
+const PRESET_LABELS = { "": "—", atendente: "Atendente", receptor: "Só receber", supervisor: "Supervisor", gerente: "Gerente", leitura: "Só ver" };
+
+const fmtDate = (d) => (d ? new Date(d).toLocaleString("pt-BR") : "nunca");
+
+const render = () => {
+  $("users").innerHTML = users.map((u) => `<tr>
+      <td>${esc(u.name)}</td>
+      <td class="mono">${esc(u.username)}</td>
+      <td>${u.groups.map((g) => `<span class="tag">${esc(g.name)}</span>`).join("") || '<span class="muted">—</span>'}</td>
+      <td>${u.isAdmin ? '<span class="tag admin">administrador</span>' : "usuário"} ${u.active ? "" : '<span class="tag off">inativo</span>'}</td>
+      <td class="num">${fmtDate(u.lastLoginAt)}</td>
+      <td><div class="row"><button class="small ghost" data-user="${u.id}">Editar</button></div></td>
+    </tr>`).join("") || `<tr><td colspan="6" class="empty">Nenhum usuário. Crie o primeiro com “+ Novo usuário”.</td></tr>`;
+  document.querySelectorAll("[data-user]").forEach((b) => b.onclick = () => openUser(users.find((u) => u.id === b.dataset.user)));
+
+  const lineName = (id) => lines.find((l) => l.id === id)?.name ?? "(removido)";
+  const SHORT = { view: "ver", receive: "atender", dial: "ligar", connection: "conectar", settings: "configurar", integrations: "integrações" };
+  $("groups").innerHTML = groups.map((g) => `<div class="card group-card">
+      <div class="row"><h3 style="flex:1">${esc(g.name)}</h3><button class="small ghost" data-group="${g.id}">Editar</button></div>
+      ${g.description ? `<div class="muted" style="font-size:13px">${esc(g.description)}</div>` : ""}
+      <div class="muted" style="font-size:13px;margin-top:6px">${g.memberIds.length} membro(s)</div>
+      <div class="lines">${g.lines.map((l) => `<div><b>${esc(lineName(l.lineId))}</b>: ${l.permissions.map((p) => SHORT[p] ?? p).join(", ")}</div>`).join("")
+        || '<div class="muted">Sem acesso a telefones</div>'}</div>
+    </div>`).join("") || `<div class="card empty" style="grid-column:1/-1">Nenhum grupo. Crie um grupo e dê permissões nos telefones.</div>`;
+  document.querySelectorAll("[data-group]").forEach((b) => b.onclick = () => openGroup(groups.find((g) => g.id === b.dataset.group)));
+};
+
+const reload = async () => {
+  [users, groups, lines] = await Promise.all([api("GET", "/users"), api("GET", "/groups"), api("GET", "/lines")]);
+  render();
+};
+
+// ─── usuário ─────────────────────────────────────────────────────────────
+const openUser = (u = null) => {
+  editingUser = u;
+  $("userTitle").textContent = u ? `Editar ${u.name}` : "Novo usuário";
+  $("uName").value = u?.name ?? "";
+  $("uUsername").value = u?.username ?? "";
+  $("uPassword").value = "";
+  $("uPassword").required = !u;
+  $("uPasswordHint").textContent = u ? "Deixe em branco para manter a senha atual. Trocar a senha encerra as sessões abertas." : "Mínimo de 8 caracteres.";
+  $("uAdmin").checked = !!u?.isAdmin;
+  $("uActive").checked = u ? u.active : true;
+  const mine = new Set(u?.groups.map((g) => g.id) ?? []);
+  $("uGroups").innerHTML = groups.map((g) => `<label class="check" style="margin:4px 0"><input type="checkbox" value="${g.id}" ${mine.has(g.id) ? "checked" : ""}> ${esc(g.name)}</label>`).join("")
+    || '<span class="muted">Nenhum grupo criado ainda.</span>';
+  $("userDelete").hidden = !u;
+  $("userDlg").showModal();
+  $("uName").focus();
+};
+
+$("userForm").addEventListener("submit", act(async (e) => {
+  e.preventDefault();
+  const body = {
+    name: $("uName").value,
+    username: $("uUsername").value,
+    isAdmin: $("uAdmin").checked,
+    active: $("uActive").checked,
+    groupIds: [...$("uGroups").querySelectorAll("input:checked")].map((i) => i.value),
+  };
+  if ($("uPassword").value) body.password = $("uPassword").value;
+  if (editingUser) await api("PATCH", `/users/${editingUser.id}`, body);
+  else await api("POST", "/users", body);
+  $("userDlg").close();
+  toast(editingUser ? "Usuário atualizado" : "Usuário criado", true);
+  await reload();
+}));
+$("userDelete").onclick = act(async () => {
+  if (!confirm(`Excluir o usuário "${editingUser.name}"? Ele perde o acesso imediatamente.`)) return;
+  await api("DELETE", `/users/${editingUser.id}`);
+  $("userDlg").close();
+  toast("Usuário excluído", true);
+  await reload();
+});
+
+// ─── grupo ───────────────────────────────────────────────────────────────
+const openGroup = (g = null) => {
+  editingGroup = g;
+  $("groupTitle").textContent = g ? `Editar ${g.name}` : "Novo grupo";
+  $("gName").value = g?.name ?? "";
+  $("gDesc").value = g?.description ?? "";
+  const members = new Set(g?.memberIds ?? []);
+  $("gMembers").innerHTML = users.map((u) => `<label class="check" style="margin:4px 0"><input type="checkbox" value="${u.id}" ${members.has(u.id) ? "checked" : ""}> ${esc(u.name)}${u.isAdmin ? ' <span class="tag admin">admin</span>' : ""}</label>`).join("")
+    || '<span class="muted">Nenhum usuário criado ainda.</span>';
+
+  const grants = new Map((g?.lines ?? []).map((l) => [l.lineId, new Set(l.permissions)]));
+  const perms = me.permissions;
+  $("gMatrix").innerHTML = lines.length ? `
+    <thead><tr><th>Telefone</th><th>Perfil</th>${perms.map((p) => `<th title="${esc(me.permissionLabels[p])}">${esc(me.permissionLabels[p])}</th>`).join("")}</tr></thead>
+    <tbody>${lines.map((l) => {
+      const set = grants.get(l.id) ?? new Set();
+      return `<tr data-line="${l.id}">
+        <td>${esc(l.name)}</td>
+        <td><select data-preset>${Object.entries(PRESET_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></td>
+        ${perms.map((p) => `<td><input type="checkbox" data-perm="${p}" ${set.has(p) ? "checked" : ""} aria-label="${esc(me.permissionLabels[p])} em ${esc(l.name)}"></td>`).join("")}
+      </tr>`;
+    }).join("")}</tbody>` : `<tbody><tr><td class="muted">Nenhum telefone cadastrado.</td></tr></tbody>`;
+
+  // Atalhos de perfil e "qualquer permissão inclui ver".
+  $("gMatrix").querySelectorAll("tr[data-line]").forEach((tr) => {
+    const boxes = [...tr.querySelectorAll("[data-perm]")];
+    const sel = tr.querySelector("[data-preset]");
+    const syncPreset = () => {
+      const on = boxes.filter((b) => b.checked).map((b) => b.dataset.perm).sort().join(",");
+      sel.value = Object.entries(PRESETS).find(([, ps]) => [...ps].sort().join(",") === on)?.[0] ?? "";
+    };
+    sel.onchange = () => { const ps = PRESETS[sel.value]; boxes.forEach((b) => b.checked = ps.includes(b.dataset.perm)); };
+    boxes.forEach((b) => b.onchange = () => {
+      const view = boxes.find((x) => x.dataset.perm === "view");
+      if (b.checked && b !== view) view.checked = true;
+      if (!view.checked) boxes.forEach((x) => x.checked = false);
+      syncPreset();
+    });
+    syncPreset();
+  });
+  $("groupDelete").hidden = !g;
+  $("groupDlg").showModal();
+  $("gName").focus();
+};
+
+$("groupForm").addEventListener("submit", act(async (e) => {
+  e.preventDefault();
+  const body = {
+    name: $("gName").value,
+    description: $("gDesc").value,
+    memberIds: [...$("gMembers").querySelectorAll("input:checked")].map((i) => i.value),
+    lines: [...$("gMatrix").querySelectorAll("tr[data-line]")].map((tr) => ({
+      lineId: tr.dataset.line,
+      permissions: [...tr.querySelectorAll("[data-perm]:checked")].map((b) => b.dataset.perm),
+    })).filter((l) => l.permissions.length),
+  };
+  if (editingGroup) await api("PATCH", `/groups/${editingGroup.id}`, body);
+  else await api("POST", "/groups", body);
+  $("groupDlg").close();
+  toast(editingGroup ? "Grupo atualizado" : "Grupo criado", true);
+  await reload();
+}));
+$("groupDelete").onclick = act(async () => {
+  if (!confirm(`Excluir o grupo "${editingGroup.name}"? Os membros perdem as permissões dadas por ele.`)) return;
+  await api("DELETE", `/groups/${editingGroup.id}`);
+  $("groupDlg").close();
+  toast("Grupo excluído", true);
+  await reload();
+});
+
+document.querySelectorAll("[data-close]").forEach((b) => b.onclick = () => b.closest("dialog").close());
+$("newUserBtn").onclick = () => openUser();
+$("newGroupBtn").onclick = () => openGroup();
+
+me = await loadMe();
+renderNav(me, "users");
+await reload().catch((e) => toast(e.message));
+</script>
+</body>
+</html>

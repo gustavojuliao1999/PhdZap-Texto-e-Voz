@@ -1,0 +1,110 @@
+// Banco do WhatsApp Voice Gateway.
+// As sessões do WhatsApp (chaves do Baileys) continuam em arquivos em DATA_DIR.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Usuário do painel. O super admin não fica aqui: ele entra com a ADMIN_API_KEY do .env.
+model User {
+  id           String        @id @default(cuid())
+  username     String        @unique
+  name         String
+  passwordHash String
+  /// Administrador: gerencia telefones, usuários e grupos (acesso total aos telefones).
+  isAdmin      Boolean       @default(false)
+  active       Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  lastLoginAt  DateTime?
+  groups       GroupMember[]
+  sessions     Session[]
+}
+
+/// Grupo de usuários com permissões por telefone.
+model Group {
+  id          String        @id @default(cuid())
+  name        String        @unique
+  description String        @default("")
+  createdAt   DateTime      @default(now())
+  members     GroupMember[]
+  lines       GroupLine[]
+}
+
+model GroupMember {
+  userId  String
+  groupId String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+}
+
+/// Permissões de um grupo num telefone: view, receive, dial, connection, settings, integrations.
+model GroupLine {
+  groupId     String
+  lineId      String
+  permissions String[]
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  line        Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, lineId])
+}
+
+/// Telefone (linha) e sua configuração.
+model Line {
+  id                   String      @id
+  name                 String
+  token                String      @unique
+  createdAt            DateTime    @default(now())
+  inboundMode          String      @default("manual")
+  inboundAnswerDelayMs Int         @default(1500)
+  maxCallDurationMs    Int         @default(3600000)
+  handler              String      @default("silence")
+  bridgeUrl            String      @default("ws://127.0.0.1:8090/media")
+  bridgeSampleRate     Int         @default(16000)
+  allowedOrigins       String[]    @default([])
+  groups               GroupLine[]
+  calls                Call[]
+}
+
+/// Histórico de ligações.
+model Call {
+  id          String    @id @default(cuid())
+  callId      String
+  lineId      String?
+  lineName    String
+  direction   String
+  remote      String
+  remoteJid   String?
+  pushName    String?
+  handler     String?
+  ownerAgent  String?
+  ownerUserId String?
+  startedAt   DateTime
+  connectedAt DateTime?
+  endedAt     DateTime?
+  endReason   String?
+  line        Line?     @relation(fields: [lineId], references: [id], onDelete: SetNull)
+
+  @@index([lineId, startedAt(sort: Desc)])
+  @@index([startedAt(sort: Desc)])
+}
+
+/// Sessão de login no painel (cookie). Guarda só o hash do token.
+model Session {
+  id        String   @id
+  userId    String?
+  /// Sessão do super admin (entrou com a ADMIN_API_KEY).
+  isSuper   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}

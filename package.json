@@ -7,18 +7,24 @@
   "scripts": {
     "start": "tsx --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",
-    "bridge:example": "tsx examples/echo-bridge-server.ts"
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "bridge:example": "tsx examples/echo-bridge-server.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "baileys-caller": "file:../baileys-caller",
+    "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
+    "tsx": "^4.23.15",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.5.12",
-    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "engines": {
