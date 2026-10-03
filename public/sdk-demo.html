@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exemplo do SDK · WhatsApp Voice</title>
+<style>
+  /* Visual propositalmente diferente do painel: o SDK não impõe interface nenhuma. */
+  body { font: 15px/1.5 system-ui, sans-serif; background: #f4f6f8; color: #1d2731; margin: 0; padding: 32px 16px; }
+  .wrap { max-width: 560px; margin: 0 auto; display: grid; gap: 16px; }
+  .box { background: #fff; border-radius: 14px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: #6b7a86; font-size: 13.5px; }
+  .status { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12.5px; font-weight: 600; background: #e7ebef; }
+  .status.open { background: #d8f5e3; color: #137a3b; }
+  button { border: 0; border-radius: 10px; padding: 11px 16px; font: inherit; font-weight: 600; cursor: pointer; background: #e7ebef; color: #1d2731; }
+  button.go { background: #16a34a; color: #fff; } button.stop { background: #dc2626; color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input { font: inherit; padding: 10px 12px; border: 1px solid #cfd8df; border-radius: 10px; flex: 1; min-width: 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #callBox.ringing { outline: 3px solid #f59e0b; }
+  #callBox.connected { outline: 3px solid #16a34a; }
+  .bars { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12.5px; color: #6b7a86; margin-top: 10px; }
+  .bar { height: 6px; background: #e7ebef; border-radius: 3px; overflow: hidden; } .bar div { height: 100%; width: 0; background: #16a34a; }
+  pre { background: #0f1720; color: #d6e2ea; border-radius: 10px; padding: 14px; font-size: 12.5px; overflow-x: auto; margin: 0; }
+  #log { max-height: 180px; overflow-y: auto; font: 12px ui-monospace, monospace; color: #44525e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="box">
+    <h1>Exemplo de integração com o SDK</h1>
+    <div class="muted">Esta página usa só o <code>sdk.js</code>, sem iframe. Toda a interface abaixo é HTML/CSS próprio.</div>
+    <p class="row" style="margin-bottom:0">Linha: <b id="lineName">…</b> <span class="status" id="lineStatus">conectando</span>
+      <button id="soundBtn" style="margin-left:auto">🔔 Ativar som</button></p>
+  </div>
+
+  <div class="box" id="callBox">
+    <div id="callInfo" class="muted">Nenhuma ligação.</div>
+    <div class="row" style="margin-top:12px">
+      <button class="go" id="answerBtn" hidden>Atender</button>
+      <button id="ignoreBtn" hidden>Ignorar</button>
+      <button id="muteBtn" hidden>Mutar</button>
+      <button class="stop" id="hangupBtn" hidden>Desligar</button>
+    </div>
+    <div class="bars" id="bars" hidden>
+      <div>Você<div class="bar"><div id="micBar"></div></div></div>
+      <div>Cliente<div class="bar"><div id="remoteBar"></div></div></div>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row">
+      <input id="number" inputmode="tel" placeholder="5581992338229 (DDI + DDD + número)">
+      <button class="go" id="dialBtn">Ligar</button>
+    </div>
+  </div>
+
+  <div class="box"><div class="muted" style="margin-bottom:6px">Eventos</div><div id="log"></div></div>
+
+  <div class="box">
+    <div class="muted" style="margin-bottom:8px">O código desta página, resumido:</div>
+    <pre id="code"></pre>
+  </div>
+</div>
+
+<script src="/sdk.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get("token");
+  const phone = WhatsAppVoice.connect({ token, agent: "Demo SDK" });
+
+  const log = (msg) => { $("log").insertAdjacentHTML("afterbegin", `<div>${new Date().toLocaleTimeString()} ${msg}</div>`); };
+  const who = (c) => (c.pushName ? `${c.pushName} · ` : "") + WhatsAppVoice.formatPhone(c.remote);
+  const fail = (err) => { log(`❌ ${err.message}`); $("callInfo").textContent = `❌ ${err.message}`; };
+
+  function render() {
+    const c = phone.call, mine = phone.isMine(c);
+    $("lineName").textContent = phone.line?.name ?? "…";
+    $("lineStatus").textContent = phone.status;
+    $("lineStatus").className = "status " + phone.status;
+    $("soundBtn").hidden = phone.audioUnlocked;
+
+    const ringing = c && c.direction === "incoming" && c.status === "ringing" && !c.ownerClientId;
+    $("callBox").className = "box " + (c ? (c.status === "connected" ? "connected" : "ringing") : "");
+    $("callInfo").textContent = !c ? "Nenhuma ligação."
+      : ringing ? `📞 ${who(c)} está ligando`
+      : !mine ? `Linha em uso${c.ownerAgent ? " por " + c.ownerAgent : ""}`
+      : c.status === "connected" ? `Em ligação com ${who(c)}` : `Chamando ${who(c)}…`;
+    $("answerBtn").hidden = $("ignoreBtn").hidden = !ringing;
+    $("muteBtn").hidden = $("hangupBtn").hidden = $("bars").hidden = !(c && mine);
+    $("muteBtn").textContent = phone.muted ? "Desmutar" : "Mutar";
+    $("dialBtn").disabled = !!c || phone.status !== "open";
+  }
+
+  // Eventos do SDK
+  phone.on("ready", (line) => { log(`conectado à linha ${line.name}`); render(); });
+  phone.on("line", render);
+  phone.on("incoming", (c) => { log(`incoming: ${who(c)}`); render(); });
+  phone.on("answered-elsewhere", (c) => { log(`atendida por ${c.ownerAgent ?? "outra pessoa"}`); render(); });
+  phone.on("dialing", (c) => { log(`dialing: ${who(c)}`); render(); });
+  phone.on("connected", (c) => { log(`connected`); render(); });
+  phone.on("ended", (c) => { log(`ended (${c.endReason ?? "-"})`); render(); });
+  phone.on("busy", (b) => log(`busy: ${b.from} ligou com a linha ocupada`));
+  phone.on("levels", (l) => { $("micBar").style.width = l.mic * 100 + "%"; $("remoteBar").style.width = l.remote * 100 + "%"; });
+  phone.on("error", fail);
+
+  // Ações
+  $("answerBtn").onclick = () => phone.answer().then(render, fail);
+  $("ignoreBtn").onclick = () => { phone.ignore(); render(); };
+  $("hangupBtn").onclick = () => phone.hangup().catch(fail);
+  $("muteBtn").onclick = () => { phone.mute(); render(); };
+  $("dialBtn").onclick = () => phone.dial($("number").value).then(render, fail);
+  $("soundBtn").onclick = () => { phone.unlockAudio(); setTimeout(render, 50); };
+  document.addEventListener("pointerdown", () => { phone.unlockAudio(); setTimeout(render, 50); }, { once: true });
+
+  $("code").textContent = `<script src="${location.origin}/sdk.js"><\/script>
+<script>
+  const phone = WhatsAppVoice.connect({ token: "TOKEN_DA_LINHA", agent: "Maria" });
+
+  phone.on("incoming", (call) => mostrarChamada(call));      // toca em todos
+  phone.on("answered-elsewhere", (call) => esconder());      // alguém atendeu antes
+  phone.on("connected", (call) => mostrarEmLigacao(call));
+  phone.on("ended", (call) => esconder());
+
+  atender.onclick  = () => phone.answer();                   // 1º a atender leva
+  desligar.onclick = () => phone.hangup();
+  ligar.onclick    = () => phone.dial("5581992338229");
+<\/script>`;
+  render();
+</script>
+</body>
+</html>

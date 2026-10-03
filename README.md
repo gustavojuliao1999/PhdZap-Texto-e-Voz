@@ -70,6 +70,38 @@ window.addEventListener("message", (e) => {
 });
 ```
 
+## Integração por JavaScript (sem iframe)
+
+Para sites onde o iframe não funciona, ou para ter uma interface própria, inclua o SDK.
+Ele não desenha nada na tela, só emite eventos e oferece métodos. O HTML e o CSS ficam por sua conta.
+
+```html
+<script src="https://SEU_GATEWAY/sdk.js"></script>
+<script>
+  const phone = WhatsAppVoice.connect({ token: "TOKEN_DA_LINHA", agent: "Maria" });
+
+  phone.on("incoming", (call) => mostrarTela(call));         // toca em todos
+  phone.on("answered-elsewhere", () => esconderTela());      // outro atendeu antes
+  phone.on("connected", (call) => mostrarEmLigacao(call));
+  phone.on("ended", () => esconderTela());
+
+  botaoAtender.onclick  = () => phone.answer();              // o 1º a atender leva
+  botaoDesligar.onclick = () => phone.hangup();
+  botaoLigar.onclick    = () => phone.dial("5581992338229");
+</script>
+```
+
+- **Eventos:** `ready`, `line`, `incoming`, `answered`, `answered-elsewhere`, `dialing`, `connected`, `ended`, `busy`,
+  `levels`, `error`.
+- **Métodos:** `answer()`, `reject()`, `ignore()`, `dial(numero)`, `hangup()`, `mute()`, `unlockAudio()`, `history()`, `destroy()`.
+- O SDK já toca o toque de chamada recebida e o "chamando". Para usar sons próprios, desligue com
+  `{ ringtone: false, ringback: false }`.
+- **Exemplo completo em HTML + CSS:** [`examples/sdk-exemplo.html`](examples/sdk-exemplo.html) é um telefone flutuante
+  no canto da página. No painel, a aba **JavaScript** de cada telefone baixa esse exemplo já preenchido com
+  a URL e o token, e tem uma demonstração ao vivo (`/sdk/demo`).
+- O site precisa estar em **HTTPS** (ou localhost) para o microfone funcionar. Se a linha tiver
+  "Sites permitidos", inclua o domínio do site.
+
 ## API
 
 Todas as rotas da linha usam `Authorization: Bearer <token da linha>` (ou `?token=`).

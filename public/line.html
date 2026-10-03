@@ -68,6 +68,7 @@
   <nav class="tabs">
     <a href="#telefone" data-tab="telefone">Telefone</a>
     <a href="#iframes" data-tab="iframes">Iframes</a>
+    <a href="#javascript" data-tab="javascript">JavaScript</a>
     <a href="#api" data-tab="api">API</a>
     <a href="#configuracoes" data-tab="configuracoes">Configurações</a>
   </nav>
@@ -140,6 +141,58 @@
       <div class="card">
         <h4>Eventos para a página que incorporou</h4>
         <pre id="snipEvents"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── JavaScript (SDK) ───────────── -->
+  <section id="tab-javascript" hidden>
+    <div class="stack">
+      <div class="card">
+        <h4>Integração por JavaScript (sem iframe)</h4>
+        <div class="hint" style="margin-top:0">
+          Para sites onde o iframe não funciona, ou para montar a interface do seu jeito. O SDK não desenha nada:
+          ele avisa quando toca, atende, liga, desliga e cuida do áudio. O HTML/CSS é seu.
+        </div>
+        <div class="snippet" style="margin-top:12px"><textarea id="snipSdk" readonly style="min-height:210px"></textarea><button class="small" data-copy="snipSdk">Copiar</button></div>
+        <div class="row" style="margin-top:12px">
+          <a id="sdkExample"><button class="green small" type="button">⬇ Baixar exemplo pronto (HTML + CSS)</button></a>
+          <a id="sdkDemo" target="_blank" rel="noopener"><button class="ghost small" type="button">Abrir demonstração</button></a>
+        </div>
+        <div class="hint">O exemplo é um telefone flutuante no canto da página, já com a URL e o token desta linha. Abra num site em HTTPS (ou localhost).</div>
+      </div>
+
+      <div class="card">
+        <h4>Eventos</h4>
+        <pre>phone.on("ready", (line) => …)              // conectado à linha
+phone.on("line", (line) => …)               // status mudou (online, sem telefone…)
+phone.on("incoming", (call) => …)           // ligação chegando (toca em todos)
+phone.on("answered", (call) => …)           // você atendeu
+phone.on("answered-elsewhere", (call) => …) // outro atendente atendeu antes
+phone.on("dialing", (call) => …)            // ligação de saída iniciada
+phone.on("connected", (call) => …)          // em ligação
+phone.on("ended", (call) => …)              // encerrada (call.endReason)
+phone.on("busy", ({ from }) => …)           // ligaram com a linha ocupada
+phone.on("levels", ({ mic, remote }) => …)  // volume (0 a 1) para medidores
+phone.on("error", (err) => …)</pre>
+        <h4>Métodos e propriedades</h4>
+        <pre>await phone.answer()        // atende (o 1º leva; os demais recebem erro 409)
+await phone.reject()        // recusa para todos
+phone.ignore()              // para de tocar só aqui
+await phone.dial("5581992338229")   // tenta com e sem o 9º dígito
+await phone.hangup()
+phone.mute(true | false)    // sem argumento alterna
+phone.unlockAudio()         // libera o som do toque (chame num clique)
+await phone.history()       // { current, history }
+phone.destroy()
+
+phone.call        // ligação atual { id, direction, remote, pushName, status, ownerAgent… }
+phone.isMine(call)// a ligação é desta aba?
+phone.line        // { id, name, status, phone }
+phone.status      // "open" | "qr" | "connecting" | …
+WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
+
+// opções: WhatsAppVoice.connect({ token, agent, server, ringtone: true, ringback: true })</pre>
       </div>
     </div>
   </section>
@@ -240,7 +293,7 @@ let history = [];
 let framesFor = "";   // token+agente com que os iframes foram carregados
 
 // ─── abas ────────────────────────────────────────────────────────────────
-const TABS = ["telefone", "iframes", "api", "configuracoes"];
+const TABS = ["telefone", "iframes", "javascript", "api", "configuracoes"];
 const showTab = () => {
   const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "telefone";
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
@@ -327,6 +380,24 @@ const fillDocs = () => {
   $("snipDialer").value =
     `<iframe src="${base}/embed/dialer?${q}&agent=Atendente"\n  allow="microphone; autoplay" style="width:360px;height:520px;border:0;border-radius:12px"></iframe>`;
   $("openReceiver").href = `${base}/embed/receiver?${q}&agent=Teste`;
+  $("sdkExample").href = `${base}/sdk/exemplo.html?${q}`;
+  $("sdkDemo").href = `${base}/sdk/demo?${q}`;
+  $("snipSdk").value =
+`<script src="${base}/sdk.js"><\/script>
+<script>
+  const phone = WhatsAppVoice.connect({ token: "${line.token}", agent: "Maria" });
+
+  phone.on("incoming", (call) => {           // toca em todos os atendentes
+    mostrarTela(call.pushName || WhatsAppVoice.formatPhone(call.remote));
+  });
+  phone.on("answered-elsewhere", () => esconderTela());   // outro atendeu antes
+  phone.on("connected", (call) => mostrarEmLigacao(call));
+  phone.on("ended", () => esconderTela());
+
+  botaoAtender.onclick  = () => phone.answer();           // o 1º a atender leva
+  botaoDesligar.onclick = () => phone.hangup();
+  botaoLigar.onclick    = () => phone.dial(campoNumero.value);
+<\/script>`;
   $("openDialer").href = `${base}/embed/dialer?${q}&agent=Teste`;
   $("snipEvents").textContent =
 `window.addEventListener("message", (e) => {

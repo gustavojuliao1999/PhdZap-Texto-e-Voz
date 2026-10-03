@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exemplo: telefone WhatsApp no meu site</title>
+
+<!--
+  ════════════════════════════════════════════════════════════════════════
+  EXEMPLO DE INTEGRAÇÃO SEM IFRAME — WhatsApp Voice Gateway
+  ════════════════════════════════════════════════════════════════════════
+  Um telefone flutuante no canto da página que RECEBE e FAZ ligações.
+  Copie as partes que quiser para o seu site e mude o visual à vontade.
+
+  1. Troque GATEWAY_URL e TOKEN_DA_LINHA abaixo (o token fica no painel,
+     página do telefone › Iframes).
+  2. Abra esta página por HTTPS (ou localhost): navegadores só liberam o
+     microfone em páginas seguras.
+  3. Se a linha tem "Sites permitidos" configurados, inclua o domínio
+     deste site lá.
+-->
+
+<style>
+  /* ─── Página de exemplo (pode apagar) ─────────────────────────────── */
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f5f7fa; color: #1f2933; }
+  .site { max-width: 760px; margin: 60px auto; padding: 0 20px; }
+  .site h1 { font-size: 28px; }
+
+  /* ─── Telefone flutuante ──────────────────────────────────────────── */
+  .wv-fab {
+    position: fixed; right: 24px; bottom: 24px; z-index: 9999;
+    width: 60px; height: 60px; border-radius: 50%; border: 0; cursor: pointer;
+    background: #25d366; color: #fff; font-size: 26px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .2); transition: transform .15s;
+  }
+  .wv-fab:hover { transform: scale(1.06); }
+  .wv-fab.wv-ringing { animation: wv-pulse 1s infinite; background: #f59e0b; }
+  .wv-fab.wv-incall { background: #128c4b; }
+  @keyframes wv-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .7); }
+    50% { box-shadow: 0 0 0 16px rgba(245, 158, 11, 0); }
+  }
+
+  .wv-panel {
+    position: fixed; right: 24px; bottom: 96px; z-index: 9999;
+    width: 320px; max-width: calc(100vw - 32px);
+    background: #fff; border-radius: 18px; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
+    font-size: 14px;
+  }
+  .wv-panel[hidden], .wv-panel [hidden] { display: none !important; }
+
+  .wv-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: #075e54; color: #fff; }
+  .wv-head strong { flex: 1; font-size: 15px; }
+  .wv-dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; }
+  .wv-dot.wv-open { background: #4ade80; }
+
+  .wv-body { padding: 18px 16px; text-align: center; }
+  .wv-avatar {
+    width: 72px; height: 72px; margin: 4px auto 10px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 30px; background: #e8f5ee;
+  }
+  .wv-name { font-size: 18px; font-weight: 600; }
+  .wv-sub { color: #6b7280; font-size: 13px; margin-top: 2px; }
+  .wv-timer { font-variant-numeric: tabular-nums; margin-top: 6px; color: #374151; }
+
+  .wv-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .wv-btn {
+    flex: 1; border: 0; border-radius: 12px; padding: 12px; cursor: pointer;
+    font: inherit; font-weight: 600; background: #eef1f4; color: #1f2933;
+  }
+  .wv-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .wv-green { background: #25d366; color: #fff; }
+  .wv-red { background: #ef4444; color: #fff; }
+
+  .wv-dial { display: flex; gap: 8px; }
+  .wv-dial input {
+    flex: 1; min-width: 0; padding: 11px 12px; font: inherit; font-size: 16px;
+    border: 1px solid #d1d5db; border-radius: 12px;
+  }
+  .wv-dial input:focus { outline: 2px solid #25d366; border-color: transparent; }
+
+  .wv-levels { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; font-size: 12px; color: #6b7280; text-align: left; }
+  .wv-bar { height: 5px; margin-top: 4px; background: #eef1f4; border-radius: 3px; overflow: hidden; }
+  .wv-bar > div { height: 100%; width: 0; background: #25d366; transition: width .08s; }
+
+  .wv-error { margin-top: 10px; color: #dc2626; font-size: 13px; min-height: 1em; }
+  .wv-sound { margin-top: 10px; font-size: 12.5px; color: #b45309; cursor: pointer; text-decoration: underline; background: none; border: 0; }
+</style>
+</head>
+<body>
+
+<!-- ─── Conteúdo do seu site (exemplo) ───────────────────────────────── -->
+<div class="site">
+  <h1>Meu site</h1>
+  <p>Conteúdo normal da página. O telefone fica no botão verde no canto inferior direito.</p>
+</div>
+
+<!-- ─── Telefone ─────────────────────────────────────────────────────── -->
+<button class="wv-fab" id="wvFab" title="Telefone">📞</button>
+
+<div class="wv-panel" id="wvPanel" hidden>
+  <div class="wv-head">
+    <span class="wv-dot" id="wvDot"></span>
+    <strong id="wvLine">Telefone</strong>
+    <span id="wvStatus">conectando…</span>
+  </div>
+
+  <div class="wv-body">
+    <!-- Sem ligação: discador -->
+    <div id="wvIdle">
+      <div class="wv-avatar">☎️</div>
+      <div class="wv-sub">Aguardando ligações</div>
+      <div class="wv-dial" style="margin-top:16px">
+        <input id="wvNumber" inputmode="tel" placeholder="5581992338229">
+        <button class="wv-btn wv-green" id="wvDial" style="flex:none">Ligar</button>
+      </div>
+    </div>
+
+    <!-- Ligação (tocando, chamando ou em andamento) -->
+    <div id="wvCall" hidden>
+      <div class="wv-avatar" id="wvAvatar">📞</div>
+      <div class="wv-name" id="wvWho"></div>
+      <div class="wv-sub" id="wvState"></div>
+      <div class="wv-timer" id="wvTimer"></div>
+
+      <div class="wv-actions" id="wvRingActions">
+        <button class="wv-btn wv-green" id="wvAnswer">Atender</button>
+        <button class="wv-btn" id="wvIgnore">Ignorar</button>
+      </div>
+      <div class="wv-actions" id="wvLiveActions">
+        <button class="wv-btn" id="wvMute">Mutar</button>
+        <button class="wv-btn wv-red" id="wvHangup">Desligar</button>
+      </div>
+      <div class="wv-levels" id="wvLevels">
+        <div>Você<div class="wv-bar"><div id="wvMicBar"></div></div></div>
+        <div>Cliente<div class="wv-bar"><div id="wvRemoteBar"></div></div></div>
+      </div>
+    </div>
+
+    <div class="wv-error" id="wvError"></div>
+    <button class="wv-sound" id="wvSound">🔔 Clique para ativar o som do toque</button>
+  </div>
+</div>
+
+<!-- ─── SDK ──────────────────────────────────────────────────────────── -->
+<script src="GATEWAY_URL/sdk.js"></script>
+<script>
+  // ══ Configuração ══════════════════════════════════════════════════════
+  const phone = WhatsAppVoice.connect({
+    token: "TOKEN_DA_LINHA",       // token da linha (painel › telefone › Iframes)
+    agent: "Atendente do site",    // nome que aparece para os outros atendentes
+    // ringtone: false,            // desative para usar um toque próprio
+    // ringback: false,            // desative o "tu… tu…" ao ligar
+  });
+
+  // ══ Interface ═════════════════════════════════════════════════════════
+  const $ = (id) => document.getElementById(id);
+  const fab = $("wvFab"), panel = $("wvPanel");
+  let ignoredId = null;
+
+  fab.onclick = () => { panel.hidden = !panel.hidden; phone.unlockAudio(); render(); };
+  $("wvSound").onclick = () => { phone.unlockAudio(); setTimeout(render, 50); };
+
+  const who = (c) => c.pushName || WhatsAppVoice.formatPhone(c.remote);
+  const showError = (err) => { $("wvError").textContent = err ? err.message : ""; };
+
+  function duration(fromIso) {
+    const s = Math.max(0, Math.round((Date.now() - new Date(fromIso)) / 1000));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function render() {
+    const c = phone.call;
+    const mine = phone.isMine(c);
+    const ringing = c && c.direction === "incoming" && c.status === "ringing" && !c.ownerClientId && c.id !== ignoredId;
+
+    // Cabeçalho
+    $("wvLine").textContent = phone.line ? phone.line.name : "Telefone";
+    $("wvStatus").textContent = { open: "online", qr: "sem telefone", connecting: "conectando…" }[phone.status] || phone.status;
+    $("wvDot").className = "wv-dot" + (phone.status === "open" ? " wv-open" : "");
+    $("wvSound").hidden = phone.audioUnlocked;
+
+    // Botão flutuante
+    fab.className = "wv-fab" + (ringing ? " wv-ringing" : c && mine ? " wv-incall" : "");
+    if (ringing) panel.hidden = false; // abre sozinho quando toca
+
+    // Discador x ligação
+    const showCall = c && (ringing || mine);
+    $("wvIdle").hidden = !!showCall;
+    $("wvCall").hidden = !showCall;
+    $("wvDial").disabled = !!c || phone.status !== "open";
+    if (!showCall) {
+      $("wvIdle").querySelector(".wv-sub").textContent = c ? `Linha em uso${c.ownerAgent ? " por " + c.ownerAgent : ""}` : "Aguardando ligações";
+      return;
+    }
+
+    $("wvWho").textContent = who(c);
+    $("wvAvatar").textContent = ringing ? "📞" : "👤";
+    $("wvState").textContent = ringing ? "está ligando…"
+      : c.status === "connected" ? "em ligação"
+      : c.direction === "outgoing" ? "chamando…" : "conectando…";
+    $("wvTimer").textContent = c.status === "connected" ? duration(c.connectedAt) : "";
+    $("wvRingActions").hidden = !ringing;
+    $("wvLiveActions").hidden = ringing;
+    $("wvLevels").hidden = ringing;
+    $("wvMute").textContent = phone.muted ? "Desmutar" : "Mutar";
+    $("wvHangup").textContent = c.status === "connected" ? "Desligar" : "Cancelar";
+  }
+  setInterval(() => { if (phone.call && phone.call.status === "connected") render(); }, 1000);
+
+  // ══ Ações ═════════════════════════════════════════════════════════════
+  $("wvAnswer").onclick = () => { showError(); phone.answer().then(render, showError); };
+  $("wvIgnore").onclick = () => { ignoredId = phone.call.id; phone.ignore(); render(); };
+  $("wvHangup").onclick = () => phone.hangup().catch(showError);
+  $("wvMute").onclick = () => { phone.mute(); render(); };
+  $("wvDial").onclick = () => { showError(); phone.dial($("wvNumber").value).then(render, showError); };
+  $("wvNumber").onkeydown = (e) => { if (e.key === "Enter") $("wvDial").click(); };
+
+  // ══ Eventos do SDK ════════════════════════════════════════════════════
+  ["ready", "line", "incoming", "dialing", "answered", "answered-elsewhere", "connected", "ended"]
+    .forEach((ev) => phone.on(ev, render));
+  phone.on("levels", (l) => {
+    $("wvMicBar").style.width = l.mic * 100 + "%";
+    $("wvRemoteBar").style.width = l.remote * 100 + "%";
+  });
+  phone.on("error", showError);
+
+  // Exemplo: reagir a uma ligação no seu sistema (abrir a ficha do cliente etc.)
+  phone.on("incoming", (call) => console.log("Ligação de", call.remote, call.pushName));
+  phone.on("ended", (call) => console.log("Ligação encerrada", call));
+
+  render();
+</script>
+</body>
+</html>

@@ -10,6 +10,7 @@ import { log } from "../log.js";
 import { newLineToken } from "../store.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../../public/", import.meta.url));
+const EXAMPLES_DIR = fileURLToPath(new URL("../../examples/", import.meta.url));
 const SESSION_COOKIE = "wvg_session";
 const SESSION_TTL_MS = 7 * 24 * 3_600_000;
 const LOGIN_MAX_FAILURES = 10;
@@ -150,6 +151,36 @@ export const startServer = (lines: LineManager, opts: ServerOptions): http.Serve
       try { body = readFileSync(PUBLIC_DIR + "static/" + name, "utf8"); } catch { throw new HttpError(404, "Não encontrado"); }
       res.writeHead(200, { "content-type": STATIC_TYPES[ext], "cache-control": "no-cache" });
       return void res.end(body);
+    }
+    // SDK JavaScript (incluído em sites de terceiros: precisa de CORS).
+    const sdkFiles: Record<string, string> = { "/sdk.js": "sdk.js", "/sdk/worklet.js": "sdk-worklet.js" };
+    if (method === "GET" && sdkFiles[p]) {
+      res.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "public, max-age=300",
+        "access-control-allow-origin": "*",
+        "cross-origin-resource-policy": "cross-origin",
+      });
+      return void res.end(page(sdkFiles[p]));
+    }
+    if (method === "GET" && p === "/sdk/exemplo.html") {
+      // Exemplo HTML+CSS pronto para baixar, já com a URL do gateway e o token da linha.
+      const token = url.searchParams.get("token") ?? "";
+      if (!lines.byToken(token)) throw new HttpError(403, "Token da linha inválido");
+      const origin = `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host}`;
+      const body = readFileSync(EXAMPLES_DIR + "sdk-exemplo.html", "utf8")
+        .replaceAll("GATEWAY_URL", origin)
+        .replaceAll("TOKEN_DA_LINHA", token);
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-disposition": 'attachment; filename="telefone-whatsapp.html"',
+        "cache-control": "no-store",
+      });
+      return void res.end(body);
+    }
+    if (method === "GET" && p === "/sdk/demo") {
+      if (!lines.byToken(url.searchParams.get("token") ?? "")) throw new HttpError(403, "Token da linha inválido");
+      return html(res, page("sdk-demo.html"));
     }
     if (method === "GET" && p === "/health") return sendJson(res, 200, { ok: true, lines: lines.lines.length });
 
