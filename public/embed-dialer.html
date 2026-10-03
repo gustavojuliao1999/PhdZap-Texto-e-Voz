@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discador</title>
+<link rel="stylesheet" href="/static/ui.css">
+<style>
+  body { min-height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+  .top { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .top .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; text-align: center; }
+  .dial-row { display: flex; gap: 8px; width: 100%; max-width: 320px; align-items: stretch; }
+  .number { font-size: 20px; letter-spacing: .02em; padding: 11px 12px; min-width: 0; flex: 1; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; width: 100%; max-width: 280px; }
+  .toast.ok { background: var(--green-dark); }
+  .pad button { padding: 12px 0; font-size: 19px; background: var(--panel-2); }
+  .wide { width: 100%; max-width: 280px; }
+  .wide button { width: 100%; padding: 13px; font-size: 15px; }
+  .avatar {
+    width: 76px; height: 76px; border-radius: 50%; background: var(--panel-2); display: grid; place-items: center;
+    font-size: 32px; border: 2px solid var(--line);
+  }
+  .calling .avatar { border-color: var(--amber); animation: ring 1.4s infinite; }
+  .incall .avatar { border-color: var(--green); }
+  .who { font-size: 20px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13.5px; }
+  .timer { font-variant-numeric: tabular-nums; }
+  .actions { display: flex; gap: 10px; width: 100%; max-width: 300px; }
+  .actions button { flex: 1; padding: 12px; font-size: 15px; }
+  .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 300px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="top">
+    <span class="name" id="lineName">…</span>
+    <span class="badge connecting" id="lineStatus">conectando…</span>
+  </div>
+  <div class="stage" id="stage"></div>
+  <div class="toast" id="toast"></div>
+
+<script type="module">
+import { api, connectEvents, notifyParent, CallAudio, ringback, clientId, agentName, params, fmtPhone, fmtDuration, esc } from "/static/voice.js";
+import { byIso, detectCountry } from "/static/countries.js";
+import { createCountryPicker } from "/static/country-picker.js";
+
+const $ = (id) => document.getElementById(id);
+const toast = (msg, ok = false) => {
+  const t = $("toast"); t.textContent = msg; t.className = "toast" + (ok ? " ok" : ""); t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => (t.style.display = "none"), 4000);
+};
+
+let line = null;
+let call = null;          // chamada atual da linha
+let busy = false;
+let info = null;
+let mode = "";            // "idle" | "call": o modo de discagem só é montado ao entrar nele
+
+// País + número nacional. Aceita ?number= (internacional) e lembra o último.
+const initial = (params.get("number") ?? localStorage.getItem("wvg_last_number") ?? "").replace(/\D/g, "");
+const initialCountry = detectCountry(initial) ?? byIso(localStorage.getItem("wvg_country") ?? "BR") ?? byIso("BR");
+let national = initial && initial.startsWith(initialCountry.code) ? initial.slice(initialCountry.code.length) : "";
+let picker = null;
+
+const levels = { mic: 0, remote: 0 };
+const audio = new CallAudio((kind, v) => {
+  levels[kind] = v;
+  const el = $(kind === "mic" ? "micLevel" : "remoteLevel");
+  if (el) el.style.width = `${v * 100}%`;
+}, () => render());
+
+// Só ligações de saída: no mesmo navegador o receptor cuida das recebidas.
+const mine = () => call && call.direction === "outgoing" && call.ownerClientId === clientId;
+const STATUS = { connecting: "conectando…", qr: "sem telefone", open: "online", error: "erro", stopped: "parada" };
+
+/** Formata o número nacional para exibição (Brasil com DDD e hífen; outros em blocos). */
+const fmtNational = (digits, iso) => {
+  if (!digits) return "";
+  if (iso === "BR") {
+    const ddd = digits.slice(0, 2), rest = digits.slice(2);
+    if (digits.length <= 2) return `(${ddd}`;
+    const cut = rest.length > 8 ? 5 : 4;
+    return `(${ddd}) ${rest.length > cut ? `${rest.slice(0, cut)}-${rest.slice(cut)}` : rest}`;
+  }
+  // Blocos de 3, sem deixar um dígito sozinho no fim: 415 555 0123 / 912 345 678.
+  return digits.replace(/(\d{3})(?=\d)/g, "$1 ").replace(/ (\d{3}) (\d)$/, " $1$2");
+};
+const PLACEHOLDER = { BR: "(11) 99999-9999", US: "415 555 0123", PT: "912 345 678" };
+
+const fullNumber = () => picker.country.code + national.replace(/^0+/, "");
+
+const render = () => {
+  $("lineName").textContent = line?.name ?? "…";
+  const st = line?.status ?? "connecting";
+  $("lineStatus").textContent = STATUS[st] ?? st;
+  $("lineStatus").className = "badge " + st;
+  const stage = $("stage");
+
+  // "Chamando…" enquanto a ligação que eu fiz não for atendida.
+  call && mine() && call.status !== "connected" ? ringback.start() : ringback.stop();
+
+  if (call && mine()) {
+    mode = "call";
+    const connected = call.status === "connected";
+    stage.className = "stage " + (connected ? "incall" : "calling");
+    stage.innerHTML = `<div class="avatar">👤</div>
+      <div class="who">${esc(fmtPhone(call.remote))}</div>
+      <div class="sub timer" id="timer">${connected ? fmtDuration(call.connectedAt) : "Chamando…"}</div>
+      <div class="meters">
+        <div>Você<div class="meter"><div id="micLevel" style="width:${levels.mic * 100}%"></div></div></div>
+        <div>Cliente<div class="meter"><div id="remoteLevel" style="width:${levels.remote * 100}%"></div></div></div>
+      </div>
+      <div class="actions">
+        <button id="muteBtn">${audio.muted ? "🎙 Desmutar" : "🔇 Mutar"}</button>
+        <button class="red" id="hangupBtn">${connected ? "Desligar" : "Cancelar"}</button>
+      </div>`;
+    $("muteBtn").onclick = () => { audio.setMuted(!audio.muted); api("POST", `/calls/${call.id}/mute`, { muted: audio.muted }).catch(() => {}); render(); };
+    $("hangupBtn").onclick = act(async () => { await api("POST", `/calls/${call.id}/hangup`); });
+    return;
+  }
+
+  if (mode !== "idle") buildIdle();
+  // Atualiza só as partes dinâmicas (não recria o campo nem fecha o seletor).
+  const lineBusy = !!call;
+  $("callBtn").disabled = st !== "open" || lineBusy;
+  $("hint").textContent = lineBusy
+    ? (call.direction === "incoming" && call.ownerClientId === clientId ? "Você está atendendo uma ligação (receptor)" : `Linha em uso${call.ownerAgent ? ` por ${call.ownerAgent}` : ""}`)
+    : st !== "open" ? "Linha sem telefone conectado" : info ?? "Escolha o país e digite o número com DDD";
+};
+
+const buildIdle = () => {
+  mode = "idle";
+  const stage = $("stage");
+  stage.className = "stage";
+  stage.innerHTML = `
+    <div class="dial-row"><div id="country"></div><input class="number" id="num" inputmode="tel" autocomplete="off"></div>
+    <div class="pad">${["1","2","3","4","5","6","7","8","9","+","0","⌫"].map((k) => `<button data-k="${k}" ${k === "+" ? 'title="Escolher país"' : ""}>${k}</button>`).join("")}</div>
+    <div class="wide"><button class="green" id="callBtn">📞 Ligar</button></div>
+    <div class="sub" id="hint"></div>`;
+  const input = $("num");
+  const paint = () => {
+    input.value = fmtNational(national, picker.country.iso);
+    input.placeholder = PLACEHOLDER[picker.country.iso] ?? "Número";
+  };
+  picker = createCountryPicker($("country"), {
+    initial: picker?.country.iso ?? initialCountry.iso,
+    onChange: (c) => { localStorage.setItem("wvg_country", c.iso); paint(); input.focus(); },
+  });
+  input.addEventListener("input", () => {
+    const raw = input.value.trim();
+    // Colou um número internacional (+5581… ou 005581…): troca o país sozinho.
+    const intl = raw.startsWith("+") ? raw.replace(/\D/g, "") : raw.startsWith("00") ? raw.replace(/\D/g, "").slice(2) : null;
+    const c = intl ? detectCountry(intl) : null;
+    if (c) { picker.set(c.iso); localStorage.setItem("wvg_country", c.iso); national = intl.slice(c.code.length); }
+    else national = raw.replace(/\D/g, "");
+    paint();
+  });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") $("callBtn").click(); });
+  $("stage").querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
+    const k = b.dataset.k;
+    if (k === "+") return picker.open();
+    national = k === "⌫" ? national.slice(0, -1) : national + k;
+    paint();
+  });
+  $("callBtn").onclick = act(dial);
+  paint();
+};
+
+const act = (fn) => async () => {
+  if (busy) return;
+  busy = true;
+  try { await fn(); } catch (err) { toast(err.message); } finally { busy = false; render(); }
+};
+
+const dial = async () => {
+  const digits = national.replace(/^0+/, "");
+  if (picker.country.iso === "BR" && digits.length < 10) throw new Error("Número incompleto: digite o DDD + número, ex.: (81) 99233-8229");
+  if (digits.length < 6) throw new Error("Número incompleto");
+  const number = fullNumber();
+  info = null;
+  await audio.prepare();   // microfone antes de discar
+  ringback.start();        // começa já no clique (gesto do usuário libera o som)
+  try {
+    call = await api("POST", "/calls", { to: number, clientId, agent: agentName || undefined });
+  } catch (err) {
+    ringback.stop();
+    audio.stop();
+    throw err;
+  }
+  localStorage.setItem("wvg_last_number", number);
+  if (call.remote && call.remote !== number) toast(`Discando ${fmtPhone(call.remote)} (número registrado no WhatsApp)`, true);
+  notifyParent("dialing", call);
+  render();
+  await audio.start(call.id);
+};
+
+setInterval(() => { const t = $("timer"); if (t && call?.status === "connected") t.textContent = fmtDuration(call.connectedAt); }, 1000);
+
+const REASONS = { hangup: "Ligação encerrada", rejected: "O contato recusou", timeout: "Sem resposta", remote_end: "O contato desligou", ended: "Ligação encerrada" };
+
+connectEvents((e) => {
+  switch (e.type) {
+    case "hello": line = e.line; call = e.line.current; break;
+    case "line": line = { ...line, ...e.line }; call = e.line.current; break;
+    case "dialing": case "incoming": case "answered": call = e.call; break;
+    case "connected":
+      call = e.call;
+      if (mine()) notifyParent("connected", e.call);
+      break;
+    case "ended": {
+      const wasMine = e.call.ownerClientId === clientId && e.call.direction === "outgoing";
+      if (call?.id === e.call.id) call = null;
+      if (wasMine) {
+        audio.stop();
+        notifyParent("ended", e.call);
+        info = e.call.connectedAt
+          ? `Ligação encerrada (${fmtDuration(e.call.connectedAt, e.call.endedAt)})`
+          : REASONS[e.call.endReason] ?? "Não atendida";
+        setTimeout(() => { info = null; if (!call) render(); }, 8000);
+      }
+      break;
+    }
+  }
+  render();
+}, (ok, reason) => {
+  if (!ok && reason) { line = null; toast(`Desconectado: ${reason}`); }
+  if (!ok) { $("lineStatus").textContent = "reconectando…"; $("lineStatus").className = "badge error"; }
+});
+
+render();
+</script>
+</body>
+</html>

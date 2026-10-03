@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telefone · WhatsApp Voice Gateway</title>
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  .line-header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  .line-header h2 { font-size: 22px; }
+  .line-header .phone { font-size: 14px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; overflow-x: auto; }
+  .tabs a {
+    color: var(--muted); text-decoration: none; padding: 11px 14px; font-weight: 600; font-size: 14px;
+    border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  .tabs a.active { color: var(--text); border-bottom-color: var(--green); }
+  .tabs a:hover { color: var(--text); }
+
+  /* Telefone */
+  .pairing { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+  .qr { background: #fff; border-radius: 10px; padding: 12px; width: 260px; height: 260px; flex: none; }
+  .qr svg { width: 100%; height: 100%; display: block; }
+  .qr.loading { display: grid; place-items: center; color: #555; background: #e9edef; font-size: 14px; }
+  .pairing ol { color: var(--muted); padding-left: 20px; margin: 10px 0 0; line-height: 1.8; }
+  .phones { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .phone-box { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .phone-box h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 12px 16px 0; }
+  .phone-box iframe { width: 100%; height: 520px; border: 0; display: block; }
+  .agent-row { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; font-size: 13.5px; }
+  .agent-row input { max-width: 220px; padding: 7px 10px; }
+
+  /* Formulários */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .snippet { position: relative; }
+  .snippet textarea { min-height: 84px; padding-right: 84px; }
+  .snippet button { position: absolute; top: 8px; right: 8px; }
+  .token-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .token-row input { flex: 1; min-width: 220px; font-family: ui-monospace, monospace; font-size: 13px; }
+  h4 { margin: 22px 0 6px; font-size: 14px; }
+  .card > h4:first-child { margin-top: 0; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12.5px; margin: 6px 0; }
+  .danger-zone { border-color: rgba(229, 72, 77, .35); }
+  .stack { display: flex; flex-direction: column; gap: 16px; max-width: 860px; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/admin" class="back">← Telefones</a>
+  <h1>📞 WhatsApp Voice Gateway</h1>
+  <span class="badge" id="live">conectando…</span>
+  <span class="spacer"></span>
+  <button class="ghost" id="logoutBtn">Sair</button>
+</header>
+
+<main>
+  <div class="line-header">
+    <div>
+      <h2 id="lineName">…</h2>
+      <div class="phone muted" id="linePhone"></div>
+    </div>
+    <span class="badge" id="lineStatus"></span>
+  </div>
+
+  <nav class="tabs">
+    <a href="#telefone" data-tab="telefone">Telefone</a>
+    <a href="#iframes" data-tab="iframes">Iframes</a>
+    <a href="#api" data-tab="api">API</a>
+    <a href="#configuracoes" data-tab="configuracoes">Configurações</a>
+  </nav>
+
+  <!-- ───────────── Telefone ───────────── -->
+  <section id="tab-telefone" hidden>
+    <div class="card pairing" id="pairing" hidden>
+      <div class="qr loading" id="qr">Gerando QR…</div>
+      <div>
+        <h3 id="pairTitle">Conecte o WhatsApp desta linha</h3>
+        <ol>
+          <li>Abra o WhatsApp no celular</li>
+          <li>Toque em <b>⋮ / Configurações › Aparelhos conectados</b></li>
+          <li>Toque em <b>Conectar aparelho</b> e aponte para o QR</li>
+        </ol>
+        <div class="hint" id="pairErr"></div>
+      </div>
+    </div>
+
+    <div id="phoneArea">
+      <div class="agent-row">
+        <label for="agentName" style="margin:0">Seu nome como atendente</label>
+        <input id="agentName" maxlength="60">
+      </div>
+      <div class="phones">
+        <div class="card phone-box"><h3>Receber</h3><iframe id="receiverFrame" allow="microphone; autoplay" title="Receber ligações"></iframe></div>
+        <div class="card phone-box"><h3>Ligar</h3><iframe id="dialerFrame" allow="microphone; autoplay" title="Fazer ligações"></iframe></div>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:28px"><h2>Histórico desta linha</h2></div>
+    <div class="card history-wrap">
+      <table>
+        <thead><tr><th>Início</th><th>Direção</th><th>Contato</th><th>Atendente</th><th>Duração</th><th>Resultado</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ───────────── Iframes ───────────── -->
+  <section id="tab-iframes" hidden>
+    <div class="stack">
+      <div class="card">
+        <h4>Token da linha</h4>
+        <div class="token-row">
+          <input id="tokenField" type="password" readonly>
+          <button class="ghost small" id="showTokenBtn">Mostrar</button>
+          <button class="ghost small" data-copy="tokenField">Copiar</button>
+          <button class="red small" id="rotateBtn">Gerar novo</button>
+        </div>
+        <div class="hint">Quem tem o token controla esta linha (ligar, atender, ouvir). Gerar um novo invalida o anterior e todos os iframes/integrações que o usam.</div>
+      </div>
+
+      <div class="card">
+        <h4>Receptor: toca em todos os atendentes; o primeiro a clicar em Atender fica na ligação</h4>
+        <div class="snippet"><textarea id="snipReceiver" readonly></textarea><button class="small" data-copy="snipReceiver">Copiar</button></div>
+        <h4>Discador: faz ligações por esta linha</h4>
+        <div class="snippet"><textarea id="snipDialer" readonly></textarea><button class="small" data-copy="snipDialer">Copiar</button></div>
+        <div class="hint">
+          Troque <code>agent=Atendente</code> pelo nome de quem usa a página (aparece para os outros atendentes e no histórico).
+          O <code>allow="microphone; autoplay"</code> é obrigatório, e o site precisa estar em <b>HTTPS</b> para o navegador liberar o microfone.
+          Para restringir em quais sites os iframes podem aparecer, use <a href="#configuracoes">Configurações › Sites permitidos</a>.
+        </div>
+        <div class="row" style="margin-top:12px">
+          <a id="openReceiver" target="_blank" rel="noopener"><button class="ghost small" type="button">Abrir receptor em nova aba</button></a>
+          <a id="openDialer" target="_blank" rel="noopener"><button class="ghost small" type="button">Abrir discador em nova aba</button></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <h4>Eventos para a página que incorporou</h4>
+        <pre id="snipEvents"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── API ───────────── -->
+  <section id="tab-api" hidden>
+    <div class="stack">
+      <div class="card">
+        <h4>Autenticação</h4>
+        <div class="hint" style="margin-top:0">
+          Envie <code>Authorization: Bearer &lt;token da linha&gt;</code> (ou <code>?token=</code> em WebSockets).
+          O token está na aba <a href="#iframes">Iframes</a>. Áudio: PCM16 little-endian, mono, 16 kHz.
+        </div>
+        <h4>Exemplos</h4>
+        <pre id="apiDocs"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── Configurações ───────────── -->
+  <section id="tab-configuracoes" hidden>
+    <div class="stack">
+      <form class="card" id="configForm" autocomplete="off">
+        <label for="fName" style="margin-top:0">Nome da linha</label>
+        <input id="fName" maxlength="60" required>
+
+        <label for="fInbound">Ao receber uma ligação</label>
+        <select id="fInbound">
+          <option value="manual">Tocar nos atendentes (receptor): o primeiro a atender fica com a ligação</option>
+          <option value="auto">Atender automaticamente com o bot/IA</option>
+          <option value="reject">Recusar sempre</option>
+        </select>
+
+        <div class="grid2">
+          <div>
+            <label for="fHandler">Bot (atendimento automático e ligações pela API)</label>
+            <select id="fHandler">
+              <option value="silence">Nenhum (silêncio)</option>
+              <option value="echo">Eco (teste de áudio)</option>
+              <option value="ws-bridge">Ponte WebSocket (IA externa)</option>
+            </select>
+          </div>
+          <div>
+            <label for="fDelay">Atraso para atender automático (segundos)</label>
+            <input id="fDelay" type="number" min="0" max="60" step="0.5">
+          </div>
+        </div>
+
+        <div class="grid2" id="bridgeFields">
+          <div>
+            <label for="fBridgeUrl">URL da ponte (IA)</label>
+            <input id="fBridgeUrl" placeholder="wss://minha-ia.exemplo.com/media">
+          </div>
+          <div>
+            <label for="fBridgeRate">Taxa de amostragem da ponte</label>
+            <select id="fBridgeRate">
+              <option value="16000">16000 Hz (nativo)</option>
+              <option value="24000">24000 Hz</option>
+              <option value="8000">8000 Hz</option>
+              <option value="48000">48000 Hz</option>
+            </select>
+          </div>
+        </div>
+
+        <label for="fMaxDur">Duração máxima da ligação (minutos, 0 = sem limite)</label>
+        <input id="fMaxDur" type="number" min="0" max="1440">
+
+        <label for="fOrigins">Sites permitidos (iframes e uso da API pelo navegador)</label>
+        <textarea id="fOrigins" rows="3" placeholder="https://meusite.com.br&#10;https://app.meusite.com.br"></textarea>
+        <div class="hint">Um por linha. Vazio = qualquer site (o token continua sendo exigido).</div>
+
+        <div class="row" style="margin-top:18px"><button class="green" type="submit">Salvar</button></div>
+      </form>
+
+      <div class="card danger-zone">
+        <h4 style="margin-top:0">Ações da linha</h4>
+        <div class="row">
+          <button class="ghost" id="restartBtn">Reiniciar linha</button>
+          <button class="red" id="disconnectBtn">Desconectar telefone</button>
+          <button class="red" id="deleteBtn">Excluir linha</button>
+        </div>
+        <div class="hint">
+          <b>Desconectar telefone</b> remove o aparelho do WhatsApp e mostra um novo QR (a linha e o token continuam).
+          <b>Excluir</b> desconecta, apaga a linha e invalida o token.
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
+import { $, STATUS, api, act, toast, connectAdminEvents, logout, callLabel, callResult } from "/static/admin.js";
+
+const lineId = location.pathname.split("/").pop();
+let line = null;
+let history = [];
+let framesFor = "";   // token+agente com que os iframes foram carregados
+
+// ─── abas ────────────────────────────────────────────────────────────────
+const TABS = ["telefone", "iframes", "api", "configuracoes"];
+const showTab = () => {
+  const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "telefone";
+  for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
+  document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
+};
+window.addEventListener("hashchange", showTab);
+showTab();
+
+// ─── render ──────────────────────────────────────────────────────────────
+const agentInput = $("agentName");
+agentInput.value = localStorage.getItem("wvg_admin_agent") ?? "Admin";
+agentInput.addEventListener("change", () => {
+  localStorage.setItem("wvg_admin_agent", agentInput.value.trim() || "Admin");
+  loadFrames(true);
+});
+
+const loadFrames = (force = false) => {
+  if (!line) return;
+  const agent = agentInput.value.trim() || "Admin";
+  const key = `${line.token}|${agent}`;
+  if (!force && key === framesFor) return;
+  // Não recarrega no meio de uma ligação (cortaria o áudio).
+  if (framesFor && line.current) return;
+  framesFor = key;
+  const q = `token=${encodeURIComponent(line.token)}&agent=${encodeURIComponent(agent)}`;
+  $("receiverFrame").src = `/embed/receiver?${q}`;
+  $("dialerFrame").src = `/embed/dialer?${q}`;
+};
+
+const render = () => {
+  if (!line) return;
+  document.title = `${line.name} · WhatsApp Voice Gateway`;
+  $("lineName").textContent = line.name;
+  $("linePhone").textContent = line.phone ? fmtPhone(line.phone) : "sem telefone conectado";
+  $("lineStatus").textContent = STATUS[line.status] ?? line.status;
+  $("lineStatus").className = "badge " + line.status;
+
+  const open = line.status === "open";
+  $("pairing").hidden = open;
+  $("phoneArea").hidden = !open;
+  if (!open) {
+    const qr = $("qr");
+    if (line.status === "qr" && line.qrSvg) { qr.className = "qr"; qr.innerHTML = line.qrSvg; }
+    else { qr.className = "qr loading"; qr.textContent = line.status === "error" ? "Reconectando…" : "Gerando QR…"; }
+    $("pairTitle").textContent = line.status === "qr" ? "Escaneie para conectar o WhatsApp desta linha" : "Conectando ao WhatsApp…";
+    $("pairErr").textContent = line.error ?? "";
+  } else {
+    loadFrames();
+  }
+  fillDocs();
+};
+
+const renderHistory = () => {
+  $("history").innerHTML = history.map((c) => `<tr>
+    <td class="num">${new Date(c.startedAt).toLocaleString("pt-BR")}</td>
+    <td>${c.direction === "incoming" ? "↙ recebida" : "↗ realizada"}</td>
+    <td>${callLabel(c)}</td>
+    <td>${esc(c.ownerAgent ?? "—")}</td>
+    <td class="num">${c.connectedAt ? fmtDuration(c.connectedAt, c.endedAt) : "—"}</td>
+    <td>${callResult(c)}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nenhuma ligação ainda</td></tr>`;
+};
+
+const fillForm = () => {
+  $("fName").value = line.name;
+  $("fInbound").value = line.inboundMode;
+  $("fHandler").value = line.handler === "browser" ? "silence" : line.handler;
+  $("fDelay").value = line.inboundAnswerDelayMs / 1000;
+  $("fBridgeUrl").value = line.bridgeUrl;
+  $("fBridgeRate").value = String(line.bridgeSampleRate);
+  $("fMaxDur").value = Math.round(line.maxCallDurationMs / 60000);
+  $("fOrigins").value = line.allowedOrigins.join("\n");
+  syncBridgeFields();
+};
+const syncBridgeFields = () => { $("bridgeFields").hidden = $("fHandler").value !== "ws-bridge"; };
+$("fHandler").onchange = syncBridgeFields;
+
+const fillDocs = () => {
+  const base = location.origin, ws = base.replace(/^http/, "ws");
+  const q = `token=${encodeURIComponent(line.token)}`;
+  if ($("tokenField").value !== line.token) $("tokenField").value = line.token;
+  $("snipReceiver").value =
+    `<iframe src="${base}/embed/receiver?${q}&agent=Atendente"\n  allow="microphone; autoplay" style="width:360px;height:420px;border:0;border-radius:12px"></iframe>`;
+  $("snipDialer").value =
+    `<iframe src="${base}/embed/dialer?${q}&agent=Atendente"\n  allow="microphone; autoplay" style="width:360px;height:520px;border:0;border-radius:12px"></iframe>`;
+  $("openReceiver").href = `${base}/embed/receiver?${q}&agent=Teste`;
+  $("openDialer").href = `${base}/embed/dialer?${q}&agent=Teste`;
+  $("snipEvents").textContent =
+`window.addEventListener("message", (e) => {
+  if (e.origin !== "${base}" || e.data?.source !== "whatsapp-voice-gateway") return;
+  // e.data.type: "incoming" | "answered" | "answered-elsewhere" | "connected" | "ended" | "dialing"
+  // e.data.call: { id, direction, remote, pushName, status, ownerAgent, connectedAt, ... }
+  console.log(e.data.type, e.data.call);
+});`;
+  const T = "TOKEN_DA_LINHA";
+  $("apiDocs").textContent =
+`# Estado da linha
+curl ${base}/api/v1/line -H "Authorization: Bearer ${T}"
+
+# Ligação atual + histórico
+curl ${base}/api/v1/calls -H "Authorization: Bearer ${T}"
+
+# Ligar  (handler: silence | echo | ws-bridge; sem handler = bot da linha)
+curl -X POST ${base}/api/v1/calls -H "Authorization: Bearer ${T}" \\
+  -H "content-type: application/json" -d '{"to":"5511999999999","handler":"ws-bridge"}'
+
+# Atender (o primeiro leva; os demais recebem 409), recusar, desligar
+curl -X POST ${base}/api/v1/calls/CALL_ID/accept -H "Authorization: Bearer ${T}" -d '{"handler":"ws-bridge"}'
+curl -X POST ${base}/api/v1/calls/CALL_ID/reject -H "Authorization: Bearer ${T}"
+curl -X POST ${base}/api/v1/calls/CALL_ID/hangup -H "Authorization: Bearer ${T}"
+
+# Durante a ligação
+POST /api/v1/calls/CALL_ID/mute   {"muted": true}
+POST /api/v1/calls/CALL_ID/play   {"url": "https://exemplo.com/aviso.mp3"}
+POST /api/v1/calls/CALL_ID/clear  (corta o áudio que está tocando)
+
+# Eventos em tempo real (WebSocket, mensagens JSON)
+${ws}/api/v1/events?token=${T}
+  {"type":"hello","line":{...}}
+  {"type":"incoming"|"dialing"|"answered"|"connected"|"ended","call":{...}}
+  {"type":"line","line":{"status":"open",...}}     {"type":"busy","from":"55..."}
+
+# Áudio da ligação (WebSocket binário, PCM16 LE mono 16 kHz nos dois sentidos)
+# Para atender com áudio próprio: abra a mídia e faça POST accept com o mesmo clientId.
+${ws}/api/v1/media?token=${T}&call=CALL_ID&clientId=MEU_ID
+
+# Gestão das linhas (chave de acesso do sistema)
+curl ${base}/admin/api/lines -H "Authorization: Bearer CHAVE_DE_ACESSO"
+PATCH  ${base}/admin/api/lines/${line.id}               {"inboundMode":"auto","handler":"ws-bridge"}
+POST   ${base}/admin/api/lines/${line.id}/logout        (desconectar telefone)
+POST   ${base}/admin/api/lines/${line.id}/rotate-token  (novo token)`;
+};
+
+// ─── ações ───────────────────────────────────────────────────────────────
+$("configForm").addEventListener("submit", act(async (e) => {
+  e.preventDefault();
+  line = await api("PATCH", `/lines/${lineId}`, {
+    name: $("fName").value,
+    inboundMode: $("fInbound").value,
+    handler: $("fHandler").value,
+    inboundAnswerDelayMs: Math.round(Number($("fDelay").value) * 1000),
+    bridgeUrl: $("fBridgeUrl").value.trim(),
+    bridgeSampleRate: Number($("fBridgeRate").value),
+    maxCallDurationMs: Math.round(Number($("fMaxDur").value) * 60000),
+    allowedOrigins: $("fOrigins").value,
+  });
+  render(); fillForm();
+  toast("Configurações salvas", true);
+}));
+
+$("showTokenBtn").onclick = () => {
+  const f = $("tokenField"), show = f.type === "password";
+  f.type = show ? "text" : "password"; $("showTokenBtn").textContent = show ? "Ocultar" : "Mostrar";
+};
+document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = async () => {
+  await navigator.clipboard.writeText($(b.dataset.copy).value);
+  toast("Copiado", true);
+});
+$("rotateBtn").onclick = act(async () => {
+  if (!confirm("Gerar um novo token?\n\nO token atual para de funcionar e os iframes/integrações precisam ser atualizados.")) return;
+  line = await api("POST", `/lines/${lineId}/rotate-token`);
+  render(); loadFrames(true);
+  toast("Novo token gerado", true);
+});
+$("restartBtn").onclick = act(async () => {
+  await api("POST", `/lines/${lineId}/restart`);
+  toast("Linha reiniciando…", true);
+});
+$("disconnectBtn").onclick = act(async () => {
+  if (!confirm(`Desconectar o telefone da linha "${line.name}"?\n\nO aparelho sai de "Aparelhos conectados" e será preciso escanear um novo QR.`)) return;
+  await api("POST", `/lines/${lineId}/logout`);
+  location.hash = "#telefone";
+  toast("Telefone desconectado. Um novo QR vai aparecer.", true);
+});
+$("deleteBtn").onclick = act(async () => {
+  if (!confirm(`Excluir a linha "${line.name}"?\n\nO telefone é desconectado, o token deixa de funcionar e a linha some do painel.`)) return;
+  await api("DELETE", `/lines/${lineId}`);
+  location.href = "/admin";
+});
+$("logoutBtn").onclick = act(logout);
+
+// ─── dados ao vivo ───────────────────────────────────────────────────────
+connectAdminEvents((e) => {
+  if (e.type === "lines") {
+    line = e.lines.find((l) => l.id === lineId);
+    if (!line) { location.href = "/admin"; return; }
+    render(); fillForm();
+  } else if (e.type === "line-admin" && e.line.id === lineId) {
+    line = e.line; render();
+  } else if (e.type === "line-removed" && e.lineId === lineId) {
+    location.href = "/admin";
+  } else if (e.type === "ended" && e.lineId === lineId) {
+    history.unshift(e.call); renderHistory();
+  }
+}, $("live"));
+
+api("GET", "/calls").then((h) => { history = h.filter((c) => c.lineId === lineId); renderHistory(); }).catch((e) => toast(e.message));
+</script>
+</body>
+</html>

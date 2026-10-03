@@ -1,0 +1,27 @@
+{
+  "name": "whatsapp-voice-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gateway de chamadas de voz do WhatsApp (entrada/saída) sobre o baileys-caller, com ponte de mídia em tempo real para agentes de IA.",
+  "scripts": {
+    "start": "tsx --env-file-if-exists=.env src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "bridge:example": "tsx examples/echo-bridge-server.ts"
+  },
+  "dependencies": {
+    "baileys-caller": "file:../baileys-caller",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

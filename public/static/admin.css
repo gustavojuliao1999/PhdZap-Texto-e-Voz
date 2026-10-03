@@ -1,0 +1,17 @@
+header {
+  display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
+}
+header h1 { font-size: 17px; }
+header .spacer { flex: 1; }
+header .back { color: var(--muted); text-decoration: none; font-size: 14px; }
+header .back:hover { color: var(--text); }
+#live { font-size: 12px; }
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 60px; }
+.section-title { display: flex; align-items: center; gap: 12px; margin: 8px 0 14px; }
+.section-title h2 { font-size: 15px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.history-wrap { overflow-x: auto; }

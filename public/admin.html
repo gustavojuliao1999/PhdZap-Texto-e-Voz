@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telefones · WhatsApp Voice Gateway</title>
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  #lines { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 16px; }
+  .line-card {
+    display: flex; flex-direction: column; gap: 12px; text-decoration: none; color: inherit;
+    transition: border-color .15s, transform .15s;
+  }
+  .line-card:hover { border-color: #3a4a55; transform: translateY(-1px); }
+  .line-card.ringing { border-color: var(--amber); animation: ring 1.4s infinite; }
+  .line-card.in-call { border-color: var(--green-dark); }
+  .line-head { display: flex; align-items: flex-start; gap: 10px; }
+  .line-head .grow { flex: 1; min-width: 0; }
+  .line-head h3 { font-size: 16px; word-break: break-word; }
+  .phone { font-size: 13px; }
+  .call-box { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; }
+  .call-box b { font-size: 14.5px; }
+  .notice { font-size: 13px; color: var(--amber); }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; margin: 0; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; }
+  .open-hint { font-size: 13px; color: var(--muted); margin-top: auto; }
+  .line-card:hover .open-hint { color: var(--text); }
+  .empty-lines { text-align: center; padding: 48px 16px; grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 WhatsApp Voice Gateway</h1>
+  <span class="badge" id="live">conectando…</span>
+  <span class="spacer"></span>
+  <button class="green" id="newLineBtn">+ Novo telefone</button>
+  <button class="ghost" id="logoutBtn">Sair</button>
+</header>
+
+<main>
+  <div class="section-title"><h2>Telefones</h2></div>
+  <div id="lines"></div>
+
+  <div class="section-title" style="margin-top:32px"><h2>Histórico de ligações</h2></div>
+  <div class="card history-wrap">
+    <table>
+      <thead><tr><th>Início</th><th>Telefone</th><th>Direção</th><th>Contato</th><th>Atendente</th><th>Duração</th><th>Resultado</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table>
+  </div>
+</main>
+
+<script type="module">
+import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
+import { $, STATUS, CALL_STATUS, INBOUND, api, act, toast, connectAdminEvents, logout, callLabel, callResult } from "/static/admin.js";
+
+let lines = [];
+let history = [];
+
+const renderLines = () => {
+  const el = $("lines");
+  if (!lines.length) {
+    el.innerHTML = `<div class="card empty-lines">
+      <p>Nenhum telefone ainda.</p>
+      <p class="muted">Adicione um telefone e escaneie o QR com o WhatsApp dele.</p>
+      <button class="green" id="firstLineBtn">+ Adicionar o primeiro telefone</button></div>`;
+    $("firstLineBtn").onclick = act(createLine);
+    return;
+  }
+  el.innerHTML = lines.map((l) => {
+    const c = l.current;
+    const cls = c ? (c.status === "connected" ? "in-call" : "ringing") : "";
+    const callHtml = c ? `<div class="call-box">
+        <span class="badge ${c.status === "ringing" && c.direction === "outgoing" ? "dialing" : c.status}">
+          ${c.direction === "incoming" ? "↙" : "↗"} ${c.status === "ringing" && c.direction === "outgoing" ? "chamando" : CALL_STATUS[c.status] ?? c.status}</span>
+        <div style="margin-top:6px"><b>${callLabel(c)}</b></div>
+        ${c.ownerAgent || c.status === "connected" ? `<div class="muted">${c.ownerAgent ? `com ${esc(c.ownerAgent)}` : ""}${c.ownerAgent && c.status === "connected" ? " · " : ""}${c.status === "connected" ? fmtDuration(c.connectedAt) : ""}</div>` : ""}
+      </div>` : "";
+    const notice = l.status === "qr" ? `<div class="notice">⚠ Aguardando leitura do QR. Abra para conectar.</div>`
+      : l.status === "error" && l.error ? `<div class="notice">${esc(l.error)}</div>` : "";
+    return `<a class="card line-card ${cls}" href="/admin/lines/${encodeURIComponent(l.id)}">
+      <div class="line-head">
+        <div class="grow">
+          <h3>${esc(l.name)}</h3>
+          <div class="phone muted">${l.phone ? esc(fmtPhone(l.phone)) : "sem telefone conectado"}</div>
+        </div>
+        <span class="badge ${l.status}">${STATUS[l.status] ?? l.status}</span>
+      </div>
+      ${notice}${callHtml}
+      <dl class="facts">
+        <dt>Entrada</dt><dd>${INBOUND[l.inboundMode] ?? l.inboundMode}${l.inboundMode === "auto" ? ` (${esc(l.handler)})` : ""}</dd>
+        <dt>Sites</dt><dd>${l.allowedOrigins.length ? esc(l.allowedOrigins.join(", ")) : "qualquer"}</dd>
+      </dl>
+      <div class="open-hint">Abrir telefone →</div>
+    </a>`;
+  }).join("");
+};
+
+const renderHistory = () => {
+  $("history").innerHTML = history.map((c) => `<tr>
+    <td class="num">${new Date(c.startedAt).toLocaleString("pt-BR")}</td>
+    <td>${esc(c.lineName)}</td>
+    <td>${c.direction === "incoming" ? "↙ recebida" : "↗ realizada"}</td>
+    <td>${callLabel(c)}</td>
+    <td>${esc(c.ownerAgent ?? "—")}</td>
+    <td class="num">${c.connectedAt ? fmtDuration(c.connectedAt, c.endedAt) : "—"}</td>
+    <td>${callResult(c)}</td>
+  </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nenhuma ligação ainda</td></tr>`;
+};
+
+setInterval(() => { if (lines.some((l) => l.current?.status === "connected")) renderLines(); }, 1000);
+
+const createLine = async () => {
+  const name = prompt("Nome do telefone (ex.: Vendas, Suporte):", `Telefone ${lines.length + 1}`);
+  if (name === null) return;
+  const line = await api("POST", "/lines", { name });
+  location.href = `/admin/lines/${encodeURIComponent(line.id)}#telefone`;
+};
+
+$("newLineBtn").onclick = act(createLine);
+$("logoutBtn").onclick = act(logout);
+
+connectAdminEvents((e) => {
+  if (e.type === "lines") { lines = e.lines; renderLines(); }
+  else if (e.type === "line-admin") {
+    const i = lines.findIndex((l) => l.id === e.line.id);
+    if (i >= 0) lines[i] = e.line; else lines.push(e.line);
+    renderLines();
+  }
+  else if (e.type === "line-removed") { lines = lines.filter((l) => l.id !== e.lineId); renderLines(); }
+  else if (e.type === "ended") { history.unshift(e.call); history = history.slice(0, 200); renderHistory(); }
+  else if (e.type === "busy") toast(`${fmtPhone(e.from)} ligou, mas o telefone estava ocupado`);
+}, $("live"));
+
+api("GET", "/calls").then((h) => { history = h; renderHistory(); }).catch((e) => toast(e.message));
+</script>
+</body>
+</html>

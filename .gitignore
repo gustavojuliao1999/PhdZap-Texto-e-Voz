@@ -1,0 +1,33 @@
+# ── Dependências ───────────────────────────────────────────────
+node_modules/
+
+# ── Dados sensíveis (NUNCA subir) ──────────────────────────────
+# Sessões do WhatsApp, tokens das linhas, chave de acesso e histórico de ligações
+data/
+# Sessão da versão antiga (linha única)
+auth/
+auth.desconectado-*/
+# Variáveis de ambiente (ADMIN_API_KEY etc.). O modelo fica em .env.example
+.env
+.env.*
+!.env.example
+
+# ── Logs (podem conter números e nomes de quem ligou) ──────────
+*.log
+logs/
+npm-debug.log*
+
+# ── Build / caches ─────────────────────────────────────────────
+dist/
+*.tsbuildinfo
+.cache/
+coverage/
+
+# ── Sistema / editores ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
