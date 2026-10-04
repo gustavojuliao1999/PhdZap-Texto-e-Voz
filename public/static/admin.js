@@ -63,6 +63,7 @@ export const renderNav = (me, active) => {
   nav.innerHTML = `
     ${link("/admin", "Telefones", "lines")}
     ${me.isAdmin ? link("/admin/users", "Usuários e grupos", "users") : ""}
+    ${me.isAdmin ? link("/admin/audit", "Auditoria", "audit") : ""}
     <span class="spacer"></span>
     <span class="me" title="${me.kind === "super" ? "Entrou com a chave de acesso" : esc(me.username ?? "")}">
       ${me.kind === "super" ? "👑 " : "👤 "}${esc(me.name)}${me.isAdmin && me.kind !== "super" ? " · admin" : ""}

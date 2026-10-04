@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auditoria · WhatsApp Voice Gateway</title>
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .filters > * { width: auto; min-width: 180px; }
+  .filters input { flex: 1; }
+  td.details { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); max-width: 520px; word-break: break-word; }
+  .act { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .act.warn { color: var(--red); }
+  .more { text-align: center; margin-top: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 WhatsApp Voice Gateway</h1>
+  <nav id="nav"></nav>
+</header>
+<main>
+  <div class="section-title"><h2>Auditoria</h2><span class="muted" style="font-size:13px">quem fez o quê no painel e na API de gestão</span></div>
+  <div class="filters">
+    <select id="fLine"><option value="">Todos os telefones</option></select>
+    <select id="fAction">
+      <option value="">Todas as ações</option>
+      <option value="session.">Login / saída</option>
+      <option value="line.">Telefones</option>
+      <option value="webhook.">Webhook</option>
+      <option value="user.">Usuários</option>
+      <option value="group.">Grupos</option>
+    </select>
+    <input id="fQ" type="search" placeholder="Pessoa ou alvo">
+  </div>
+  <div class="card history-wrap">
+    <table>
+      <thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Alvo</th><th>Detalhes</th><th>IP</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="more"><button class="ghost small" id="moreBtn" hidden>Carregar mais</button></div>
+</main>
+<script type="module">
+import { esc } from "/static/voice.js";
+import { $, api, act, toast, loadMe, renderNav } from "/static/admin.js";
+
+const ACTIONS = {
+  "session.login": "entrou", "session.logout": "saiu", "session.login-failed": "login recusado",
+  "line.create": "criou telefone", "line.update": "alterou telefone", "line.delete": "excluiu telefone",
+  "line.rotate-token": "gerou novo token", "line.logout": "desconectou telefone", "line.restart": "reiniciou telefone",
+  "webhook.retry": "reenviou webhook",
+  "user.create": "criou usuário", "user.update": "alterou usuário", "user.delete": "excluiu usuário",
+  "group.create": "criou grupo", "group.update": "alterou grupo", "group.delete": "excluiu grupo",
+};
+let rows = [];
+let lineNames = {};
+
+/** Resumo legível dos detalhes (mudanças "de → para" ou o corpo enviado). */
+const fmtDetails = (d) => {
+  if (!d || typeof d !== "object") return "";
+  return Object.entries(d).map(([k, v]) => {
+    if (v && typeof v === "object" && "de" in v && "para" in v) return `${k}: ${JSON.stringify(v.de)} → ${JSON.stringify(v.para)}`;
+    return `${k}: ${JSON.stringify(v)}`;
+  }).join(" · ");
+};
+
+const render = () => {
+  $("rows").innerHTML = rows.map((r) => `<tr>
+    <td class="num">${new Date(r.at).toLocaleString("pt-BR")}</td>
+    <td>${esc(r.actor)}</td>
+    <td><span class="act ${r.action.endsWith("failed") || r.action.endsWith("delete") ? "warn" : ""}" title="${esc(r.action)}">${esc(ACTIONS[r.action] ?? r.action)}</span></td>
+    <td>${esc(r.target ?? "")}${r.lineId && lineNames[r.lineId] && lineNames[r.lineId] !== r.target ? ` <span class="muted">(${esc(lineNames[r.lineId])})</span>` : ""}</td>
+    <td class="details">${esc(fmtDetails(r.details))}</td>
+    <td class="num muted">${esc(r.ip ?? "")}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nada registrado</td></tr>`;
+};
+
+const load = async (more = false) => {
+  const q = new URLSearchParams({ limit: "100" });
+  if ($("fLine").value) q.set("line", $("fLine").value);
+  if ($("fAction").value) q.set("action", $("fAction").value);
+  if ($("fQ").value.trim()) q.set("q", $("fQ").value.trim());
+  if (more && rows.length) q.set("before", rows[rows.length - 1].at);
+  const page = await api("GET", `/audit?${q}`);
+  rows = more ? rows.concat(page) : page;
+  $("moreBtn").hidden = page.length < 100;
+  render();
+};
+
+const me = await loadMe().catch((e) => { toast(e.message); return null; });
+if (me) renderNav(me, "audit");
+const lines = await api("GET", "/lines").catch(() => []);
+lineNames = Object.fromEntries(lines.map((l) => [l.id, l.name]));
+$("fLine").innerHTML += lines.map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join("");
+let t;
+$("fLine").onchange = $("fAction").onchange = () => load().catch((e) => toast(e.message));
+$("fQ").oninput = () => { clearTimeout(t); t = setTimeout(() => load().catch((e) => toast(e.message)), 300); };
+$("moreBtn").onclick = act(() => load(true));
+load().catch((e) => toast(e.message));
+</script>
+</body>
+</html>

@@ -28,6 +28,8 @@ const toConfig = (l: Line): LineConfig => ({
   webhookUrl: l.webhookUrl,
   webhookSecret: l.webhookSecret,
   webhookEvents: l.webhookEvents,
+  rateLimitPerMinute: l.rateLimitPerMinute,
+  rateLimitPerDay: l.rateLimitPerDay,
 });
 
 const fromConfig = (c: LineConfig) => ({
@@ -43,6 +45,8 @@ const fromConfig = (c: LineConfig) => ({
   webhookUrl: c.webhookUrl,
   webhookSecret: c.webhookSecret,
   webhookEvents: c.webhookEvents,
+  rateLimitPerMinute: c.rateLimitPerMinute,
+  rateLimitPerDay: c.rateLimitPerDay,
 });
 
 const toView = (c: Call): CallView => ({
@@ -129,6 +133,8 @@ export class Store {
     webhookUrl: "",
     webhookSecret: newWebhookSecret(),
     webhookEvents: [],
+    rateLimitPerMinute: 20,
+    rateLimitPerDay: 1000,
   });
 
   insertLine = async (c: LineConfig): Promise<void> => {
@@ -275,6 +281,10 @@ export class Store {
     await this.db.message.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: "read" } });
     return rows.map((r) => r.raw).filter((r): r is string => !!r);
   };
+
+  /** Mensagens enviadas pelo gateway (API/painel) desde `since` — base do limite diário. */
+  countSentSince = async (lineId: string, since: Date): Promise<number> =>
+    this.db.message.count({ where: { lineId, direction: "outgoing", agent: { not: null }, type: { not: "reaction" }, createdAt: { gte: since } } });
 
   getMessage = async (lineId: string, waId: string): Promise<{ view: MessageView; raw: string | null } | null> => {
     const row = await this.db.message.findUnique({ where: { lineId_waId: { lineId, waId } } });

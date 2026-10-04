@@ -74,6 +74,9 @@ model Line {
   webhookSecret        String      @default("")
   /// Eventos enviados ao webhook (vazio = todos).
   webhookEvents        String[]    @default([])
+  /// Limite de mensagens enviadas pelo gateway (0 = sem limite).
+  rateLimitPerMinute   Int         @default(20)
+  rateLimitPerDay      Int         @default(1000)
   groups               GroupLine[]
   calls                Call[]
   messages             Message[]
@@ -153,6 +156,26 @@ model WebhookDelivery {
 
   @@index([lineId, status, seq])
   @@index([lineId, createdAt(sort: Desc)])
+}
+
+/// Quem fez o quê no painel e na API de gestão.
+model AuditLog {
+  id        String   @id @default(cuid())
+  at        DateTime @default(now())
+  /// super | user | token | system
+  actorKind String
+  actorId   String?
+  actor     String
+  /// ex.: line.update, user.create, session.login
+  action    String
+  lineId    String?
+  target    String?
+  details   Json?
+  ip        String?
+
+  @@index([at(sort: Desc)])
+  @@index([lineId, at(sort: Desc)])
+  @@index([action, at(sort: Desc)])
 }
 
 /// Sessão de login no painel (cookie). Guarda só o hash do token.

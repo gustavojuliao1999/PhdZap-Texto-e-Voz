@@ -1,6 +1,7 @@
 import path from "node:path";
 import { toVoiceNote } from "../audio/voice-note.js";
 import { HttpError } from "../line-manager.js";
+import { UnsafeUrlError, safeFetch } from "../net/safe-fetch.js";
 import type { OutgoingContent } from "../worker/protocol.js";
 
 /** Tamanho máximo de um arquivo enviado (URL ou base64). */
@@ -32,24 +33,15 @@ const str = (v: unknown, max: number, field: string): string | undefined => {
 };
 
 const download = async (url: string): Promise<{ data: Uint8Array; mimetype?: string }> => {
-  if (!/^https?:\/\//i.test(url)) throw new HttpError(400, "Campo 'url' deve começar com http:// ou https://");
-  let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    const r = await safeFetch(url, { maxBytes: MAX_MEDIA_BYTES, timeoutMs: 30_000 });
+    const mimetype = r.contentType?.split(";")[0].trim();
+    return { data: r.data, mimetype: mimetype && mimetype !== "application/octet-stream" ? mimetype : undefined };
   } catch (err: any) {
-    throw new HttpError(400, `Não foi possível baixar a mídia: ${err?.cause?.message ?? err?.message ?? err}`);
+    if (err instanceof RangeError) throw new HttpError(413, "Mídia muito grande (máx. 25 MB)");
+    if (err instanceof UnsafeUrlError) throw new HttpError(400, err.message);
+    throw new HttpError(400, `Não foi possível baixar a mídia: ${err?.message ?? err}`);
   }
-  if (!res.ok) throw new HttpError(400, `Não foi possível baixar a mídia: HTTP ${res.status}`);
-  if (Number(res.headers.get("content-length") ?? 0) > MAX_MEDIA_BYTES) throw new HttpError(413, "Mídia muito grande (máx. 25 MB)");
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-    size += chunk.byteLength;
-    if (size > MAX_MEDIA_BYTES) throw new HttpError(413, "Mídia muito grande (máx. 25 MB)");
-    chunks.push(chunk);
-  }
-  const mimetype = res.headers.get("content-type")?.split(";")[0].trim();
-  return { data: Buffer.concat(chunks), mimetype: mimetype && mimetype !== "application/octet-stream" ? mimetype : undefined };
 };
 
 const decodeBase64 = (b64: string): { data: Uint8Array; mimetype?: string } => {

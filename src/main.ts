@@ -71,7 +71,10 @@ startMaintenance({
   dataDir: store.dataDir,
   mediaCacheDays: Number(env("MEDIA_CACHE_DAYS", "30")),
   mediaCacheMaxMb: Number(env("MEDIA_CACHE_MAX_MB", "5120")),
-  tasks: [webhooks.prune],
+  tasks: [
+    webhooks.prune,
+    async () => { await prisma.auditLog.deleteMany({ where: { at: { lt: new Date(Date.now() - Number(env("AUDIT_DAYS", "365")) * 86_400_000) } } }); },
+  ],
 });
 
 let shuttingDown = false;

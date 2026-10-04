@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { log } from "./log.js";
 import type { CallRecord } from "./session.js";
 import type { Store } from "./store.js";
+import { SendLimiter } from "./rate-limit.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
 import {
@@ -293,8 +294,15 @@ export class LineManager extends EventEmitter {
   /** Fotos de perfil: lineId:remote -> URL (as URLs do WhatsApp expiram). */
   readonly #photos = new Map<string, { url: string | null; at: number }>();
 
+  readonly #limiter: SendLimiter;
+
   constructor(private readonly store: Store) {
     super();
+    this.#limiter = new SendLimiter((lineId) => {
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      return store.countSentSince(lineId, midnight);
+    });
   }
 
   get lines(): LineRuntime[] { return [...this.#lines.values()]; }
@@ -371,6 +379,7 @@ export class LineManager extends EventEmitter {
     if (line.wa.status !== "open") throw new HttpError(503, "WhatsApp desta linha não está conectado");
     let quotedRaw: string | undefined;
     if (content.type === "reaction" && !opts.replyTo) throw new HttpError(400, "Reação precisa de 'replyTo' (a mensagem reagida)");
+    if (content.type !== "reaction") await this.#limiter.take(id, line.config.rateLimitPerMinute, line.config.rateLimitPerDay);
     if (opts.replyTo) {
       const quoted = await this.store.getMessage(id, opts.replyTo);
       if (!quoted?.raw) throw new HttpError(404, "Mensagem citada (replyTo) não encontrada");
@@ -491,7 +500,7 @@ const sanitizePatch = (p: Partial<LineConfig>): Partial<LineConfig> => {
     if (!HANDLERS.includes(p.handler)) throw new HttpError(400, `handler: use ${HANDLERS.join(", ")}`);
     out.handler = p.handler;
   }
-  const num = (k: "inboundAnswerDelayMs" | "maxCallDurationMs" | "bridgeSampleRate", min: number, max: number) => {
+  const num = (k: "inboundAnswerDelayMs" | "maxCallDurationMs" | "bridgeSampleRate" | "rateLimitPerMinute" | "rateLimitPerDay", min: number, max: number) => {
     if (p[k] === undefined) return;
     const v = Number(p[k]);
     if (!Number.isFinite(v) || v < min || v > max) throw new HttpError(400, `${k} fora do intervalo ${min}–${max}`);
@@ -500,6 +509,8 @@ const sanitizePatch = (p: Partial<LineConfig>): Partial<LineConfig> => {
   num("inboundAnswerDelayMs", 0, 60_000);
   num("maxCallDurationMs", 0, 24 * 3_600_000);
   num("bridgeSampleRate", 8000, 48000);
+  num("rateLimitPerMinute", 0, 1000);
+  num("rateLimitPerDay", 0, 1_000_000);
   if (p.bridgeUrl !== undefined) {
     if (typeof p.bridgeUrl !== "string" || (p.bridgeUrl && !/^wss?:\/\//.test(p.bridgeUrl))) {
       throw new HttpError(400, "bridgeUrl deve começar com ws:// ou wss://");

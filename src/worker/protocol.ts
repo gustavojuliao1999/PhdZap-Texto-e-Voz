@@ -23,6 +23,9 @@ export type LineConfig = CallPolicy & {
   webhookSecret: string;
   /** Eventos enviados ao webhook (vazio = todos). */
   webhookEvents: string[];
+  /** Limite de mensagens enviadas pelo gateway (0 = sem limite). */
+  rateLimitPerMinute: number;
+  rateLimitPerDay: number;
 };
 
 export type MessageType =

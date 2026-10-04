@@ -293,6 +293,19 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         <textarea id="fOrigins" rows="3" placeholder="https://meusite.com.br&#10;https://app.meusite.com.br"></textarea>
         <div class="hint">Um por linha. Vazio = qualquer site (o token continua sendo exigido).</div>
 
+        <h4>Limite de envio de mensagens</h4>
+        <div class="grid2">
+          <div>
+            <label for="fRateMin" style="margin-top:0">Por minuto</label>
+            <input id="fRateMin" type="number" min="0" max="1000">
+          </div>
+          <div>
+            <label for="fRateDay" style="margin-top:0">Por dia</label>
+            <input id="fRateDay" type="number" min="0" max="1000000">
+          </div>
+        </div>
+        <div class="hint">Vale para mensagens enviadas pela API e pelo painel (0 = sem limite). Envio em massa aumenta o risco de o WhatsApp banir o número.</div>
+
         <h4>Webhook (mensagens e ligações)</h4>
         <label for="fWebhookUrl" style="margin-top:0">URL que recebe os eventos (POST JSON)</label>
         <input id="fWebhookUrl" placeholder="https://meusistema.com.br/whatsapp/webhook">
@@ -478,6 +491,8 @@ const fillForm = () => {
   $("fBridgeRate").value = String(line.bridgeSampleRate);
   $("fMaxDur").value = Math.round(line.maxCallDurationMs / 60000);
   $("fOrigins").value = line.allowedOrigins.join("\n");
+  $("fRateMin").value = line.rateLimitPerMinute ?? 20;
+  $("fRateDay").value = line.rateLimitPerDay ?? 1000;
   $("fWebhookUrl").value = line.webhookUrl ?? "";
   $("fWebhookSecret").value = line.webhookSecret ?? "";
   document.querySelectorAll("#fWebhookEvents input").forEach((c) => { c.checked = (line.webhookEvents ?? []).includes(c.value); });
@@ -619,6 +634,8 @@ $("configForm").addEventListener("submit", act(async (e) => {
     bridgeSampleRate: Number($("fBridgeRate").value),
     maxCallDurationMs: Math.round(Number($("fMaxDur").value) * 60000),
     allowedOrigins: $("fOrigins").value,
+    rateLimitPerMinute: Number($("fRateMin").value || 0),
+    rateLimitPerDay: Number($("fRateDay").value || 0),
     webhookUrl: $("fWebhookUrl").value.trim(),
     webhookSecret: $("fWebhookSecret").value.trim(),
     webhookEvents: [...document.querySelectorAll("#fWebhookEvents input:checked")].map((c) => c.value),

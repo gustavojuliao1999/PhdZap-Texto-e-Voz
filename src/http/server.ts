@@ -4,6 +4,7 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import { WebSocketServer, type WebSocket } from "ws";
+import { clientIp, makeAudit } from "../audit.js";
 import { verifyPassword } from "../auth/passwords.js";
 import {
   PERMISSION_LABELS, PERMISSIONS, can, displayName, isAdmin, permissionsOn,
@@ -16,6 +17,7 @@ import {
 import { log } from "../log.js";
 import { newLineToken, type Store } from "../store.js";
 import type { WebhookDispatcher } from "../webhooks.js";
+import { assertPublicUrl } from "../net/safe-fetch.js";
 import { docPage } from "./docs.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
@@ -125,6 +127,8 @@ const lineView = (line: LineRuntime, p: Principal) => {
       webhookUrl: c.webhookUrl,
       webhookSecret: c.webhookSecret,
       webhookEvents: c.webhookEvents,
+      rateLimitPerMinute: c.rateLimitPerMinute,
+      rateLimitPerDay: c.rateLimitPerDay,
     } : {}),
   };
 };
@@ -133,6 +137,7 @@ const lineView = (line: LineRuntime, p: Principal) => {
 
 export const startServer = (deps: ServerDeps): http.Server => {
   const { lines, store, db, sessions, webhooks } = deps;
+  const audit = makeAudit(db);
   const loginFailures = new Map<string, { count: number; since: number }>();
 
   /** Quem está logado no painel (cookie) ou o super admin via `Authorization: Bearer <chave>`. */
@@ -185,6 +190,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       ...(headers["content-security-policy"] ? {} : { "x-frame-options": "DENY" }),
+      ...(deps.secureCookies ? { "strict-transport-security": "max-age=31536000" } : {}),
       ...headers,
     });
     res.end(body);
@@ -206,6 +212,12 @@ export const startServer = (deps: ServerDeps): http.Server => {
     if (method === "GET" && p === "/admin") {
       if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
       return html(res, page("admin.html"));
+    }
+    if (method === "GET" && p === "/admin/audit") {
+      const me = await panelPrincipal(req, url);
+      if (!me) return redirect(res, "/login");
+      if (!isAdmin(me)) return redirect(res, "/admin");
+      return html(res, page("audit.html"));
     }
     if (method === "GET" && p === "/admin/users") {
       const me = await panelPrincipal(req, url);
@@ -294,7 +306,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
     // ── sessão do painel ──
     if (p === "/admin/api/session") {
       if (method === "POST") {
-        const ip = req.socket.remoteAddress ?? "?";
+        const ip = clientIp(req);
         const f = loginFailures.get(ip);
         if (f && Date.now() - f.since < LOGIN_WINDOW_MS && f.count >= LOGIN_MAX_FAILURES) {
           throw new HttpError(429, "Muitas tentativas. Aguarde alguns minutos.");
@@ -310,7 +322,9 @@ export const startServer = (deps: ServerDeps): http.Server => {
             await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
           }
         }
+        const who = typeof b.key === "string" ? "chave de acesso" : String(b.username ?? "").slice(0, 60);
         if (!token) {
+          audit({ kind: "anonymous", name: who }, req, "session.login-failed");
           const cur = f && Date.now() - f.since < LOGIN_WINDOW_MS ? f : { count: 0, since: Date.now() };
           cur.count += 1;
           loginFailures.set(ip, cur);
@@ -318,11 +332,13 @@ export const startServer = (deps: ServerDeps): http.Server => {
           throw new HttpError(401, typeof b.key === "string" ? "Chave de acesso inválida" : "Usuário ou senha inválidos");
         }
         loginFailures.delete(ip);
+        audit(await sessions.resolve(token), req, "session.login");
         res.setHeader("set-cookie",
           `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessions.ttlSeconds}${deps.secureCookies ? "; Secure" : ""}`);
         return sendJson(res, 200, { ok: true });
       }
       if (method === "DELETE") {
+        audit(await sessions.resolve(parseCookies(req)[SESSION_COOKIE]), req, "session.logout");
         await sessions.destroy(parseCookies(req)[SESSION_COOKIE]);
         res.setHeader("set-cookie", `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
         return sendJson(res, 200, { ok: true });
@@ -352,6 +368,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
           requireAdmin(me);
           const body = await readJson(req);
           const line = await lines.create(String(body.name ?? "").trim() || `Telefone ${lines.lines.length + 1}`, body);
+          audit(me, req, "line.create", { lineId: line.config.id, target: line.config.name, details: body });
           log.info(`telefone criado: ${line.config.name} (${line.config.id}) por ${displayName(me)}`);
           return sendJson(res, 201, lineView(line, me));
         }
@@ -362,12 +379,27 @@ export const startServer = (deps: ServerDeps): http.Server => {
         if (!lines.get(id)) throw new HttpError(404, "Telefone não encontrado");
         if (!action && method === "PATCH") {
           requirePerm(me, id, "settings");
-          return sendJson(res, 200, lineView(await lines.update(id, await readJson(req)), me));
+          const before = { ...lines.get(id)!.config };
+          const body = await readJson(req);
+          const after = (await lines.update(id, body)).config;
+          const changed = Object.fromEntries(Object.keys(after)
+            .filter((k) => JSON.stringify((before as any)[k]) !== JSON.stringify((after as any)[k]))
+            .map((k) => [k, { de: (before as any)[k], para: (after as any)[k] }]));
+          if (Object.keys(changed).length) audit(me, req, "line.update", { lineId: id, target: after.name, details: changed });
+          return sendJson(res, 200, lineView(lines.get(id)!, me));
         }
-        if (!action && method === "DELETE") { requireAdmin(me); await lines.remove(id); return sendJson(res, 200, { ok: true }); }
+        if (!action && method === "DELETE") {
+          requireAdmin(me);
+          const name = lines.get(id)!.config.name;
+          await lines.remove(id);
+          audit(me, req, "line.delete", { lineId: id, target: name });
+          return sendJson(res, 200, { ok: true });
+        }
         if (method === "POST" && action === "rotate-token") {
           requirePerm(me, id, "integrations");
-          return sendJson(res, 200, lineView(await lines.rotateToken(id, newLineToken()), me));
+          const view = lineView(await lines.rotateToken(id, newLineToken()), me);
+          audit(me, req, "line.rotate-token", { lineId: id, target: view.name });
+          return sendJson(res, 200, view);
         }
         if (method === "POST" && action === "webhook-test") {
           requirePerm(me, id, "settings");
@@ -381,13 +413,22 @@ export const startServer = (deps: ServerDeps): http.Server => {
             const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
             return sendJson(res, 200, { summary: await webhooks.summary(id), deliveries: await webhooks.list(id, { status, limit }) });
           }
-          if (method === "POST" && sub === "retry-failed") return sendJson(res, 200, { requeued: await webhooks.retry(id) });
-          if (method === "POST" && sub && parts[4] === "retry") return sendJson(res, 200, { requeued: await webhooks.retry(id, [sub]) });
+          if (method === "POST" && (sub === "retry-failed" || (sub && parts[4] === "retry"))) {
+            const requeued = await webhooks.retry(id, sub === "retry-failed" ? undefined : [sub]);
+            audit(me, req, "webhook.retry", { lineId: id, target: sub === "retry-failed" ? "todas as falhas" : sub, details: { requeued } });
+            return sendJson(res, 200, { requeued });
+          }
         }
-        if (method === "POST" && action === "logout") { requirePerm(me, id, "connection"); await lines.logout(id); return sendJson(res, 200, { ok: true }); }
+        if (method === "POST" && action === "logout") {
+          requirePerm(me, id, "connection");
+          await lines.logout(id);
+          audit(me, req, "line.logout", { lineId: id, target: lines.get(id)?.config.name });
+          return sendJson(res, 200, { ok: true });
+        }
         if (method === "POST" && action === "restart") {
           requirePerm(me, id, "connection");
           await lines.get(id)!.restart();
+          audit(me, req, "line.restart", { lineId: id, target: lines.get(id)?.config.name });
           return sendJson(res, 200, { ok: true });
         }
       }
@@ -397,11 +438,42 @@ export const startServer = (deps: ServerDeps): http.Server => {
         if (lineId && !can(me, lineId, "view")) throw new HttpError(403, "Sem permissão para este telefone");
         return sendJson(res, 200, await store.recentCalls(lineId ? [lineId] : visible, 200));
       }
+      if (parts[0] === "audit" && method === "GET") {
+        requireAdmin(me);
+        const before = url.searchParams.get("before");
+        const lineId = url.searchParams.get("line") || undefined;
+        const action = url.searchParams.get("action") || undefined;
+        const q = url.searchParams.get("q")?.trim() || undefined;
+        const rows = await db.auditLog.findMany({
+          where: {
+            ...(lineId ? { lineId } : {}),
+            ...(action ? { action: { startsWith: action } } : {}),
+            ...(q ? { OR: [{ actor: { contains: q, mode: "insensitive" } }, { target: { contains: q, mode: "insensitive" } }] } : {}),
+            ...(before ? { at: { lt: new Date(before) } } : {}),
+          },
+          orderBy: { at: "desc" },
+          take: Math.min(Number(url.searchParams.get("limit") ?? 100) || 100, 500),
+        });
+        return sendJson(res, 200, rows);
+      }
       if (parts[0] === "users" || parts[0] === "groups") {
         requireAdmin(me);
-        const result = await handleUsersApi(method, parts, () => readJson(req), me, {
+        let body: any;
+        // Na exclusão, guarda o nome antes (depois não existe mais).
+        const deletedName = method === "DELETE" && parts[1]
+          ? (parts[0] === "users"
+            ? (await db.user.findUnique({ where: { id: parts[1] } }))?.username
+            : (await db.group.findUnique({ where: { id: parts[1] } }))?.name)
+          : undefined;
+        const result = await handleUsersApi(method, parts, async () => (body = await readJson(req)), me, {
           db, sessions, lines, onPermissionsChanged: () => notifyPermissionsChanged(),
         });
+        if (result !== undefined && method !== "GET") {
+          const kind = parts[0] === "users" ? "user" : "group";
+          const verb = method === "POST" ? "create" : method === "PATCH" ? "update" : "delete";
+          const r = result as any;
+          audit(me, req, `${kind}.${verb}`, { target: deletedName ?? r?.username ?? r?.name ?? parts[1], details: body });
+        }
         if (result !== undefined) return sendJson(res, 200, result);
       }
       throw new HttpError(404, "Rota não encontrada");
@@ -468,6 +540,8 @@ export const startServer = (deps: ServerDeps): http.Server => {
           case "play":
             ownsOrCan(callPerm);
             if (typeof body.url !== "string") throw new HttpError(400, "Campo 'url' obrigatório");
+            // O ffmpeg abriria qualquer caminho/URL: só http(s) para endereços públicos.
+            await assertPublicUrl(body.url).catch((err) => { throw new HttpError(400, err.message); });
             await line.request({ cmd: "play", callId, url: body.url });
             break;
           default: throw new HttpError(404, "Ação desconhecida");
