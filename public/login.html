@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Entrar · PhdZap</title>
+<link rel="icon" href="/static/icon.svg">
 <link rel="stylesheet" href="/static/ui.css">
 <style>
   body { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
   .card { width: 100%; max-width: 380px; padding: 28px; }
   .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-  .logo span { width: 34px; height: 34px; border-radius: 9px; background: var(--green-dark); display: grid; place-items: center; font-size: 18px; }
+  .logo .brand { font-size: 24px; }
+  .logo .brand img { width: 40px; height: 40px; }
   h1 { font-size: 19px; }
   p { margin: 4px 0 14px; font-size: 14px; }
   button[type=submit] { width: 100%; margin-top: 18px; padding: 12px; }
@@ -20,7 +22,7 @@
 </head>
 <body>
   <form class="card" id="form" autocomplete="on">
-    <div class="logo"><span>📞</span><h1>PhdZap</h1></div>
+    <div class="logo"><h1 class="brand"><img src="/static/icon.svg" alt=""><span>Phd<b>Zap</b></span></h1></div>
     <p class="muted" id="subtitle">Entre com seu usuário e senha.</p>
 
     <div id="userFields">

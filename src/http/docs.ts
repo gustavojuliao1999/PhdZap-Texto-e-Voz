@@ -73,7 +73,10 @@ export const docPage = (name: string, origin: string): string | null => {
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 18px; padding: 12px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  header b { font-size: 16px; white-space: nowrap; }
+  header .brand { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 800; color: var(--text); text-decoration: none; white-space: nowrap; }
+  header .brand img { width: 26px; height: 26px; }
+  header .brand b { background: linear-gradient(135deg, #4ff5a6, #14c98a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header .brand small { color: var(--muted); font-weight: 600; font-size: 14px; margin-left: 4px; }
   header nav { display: flex; gap: 4px; }
   header nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
   header nav a.active, header nav a:hover { color: var(--text); background: var(--panel-2); }
@@ -118,7 +121,7 @@ export const docPage = (name: string, origin: string): string | null => {
 </head>
 <body>
 <header>
-  <b>📞 Documentação</b>
+  <a class="brand" href="/docs"><img src="/static/icon.svg" alt=""><span>Phd<b>Zap</b></span><small>Documentação</small></a>
   <nav>${nav}</nav>
   <a class="dl" href="/docs/postman.json" download title="Coleção com todas as rotas, para importar no Postman">⬇ Postman</a>
   <span class="base">URL base: <code>${esc(origin)}</code></span>
