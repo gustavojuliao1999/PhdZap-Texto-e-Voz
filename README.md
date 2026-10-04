@@ -148,6 +148,9 @@ Ele não desenha nada na tela, só emite eventos e oferece métodos. O HTML e o 
 
 ## API
 
+> **Documentação completa:** [docs/API.md](docs/API.md) (REST, WebSocket, áudio, ponte de IA, gestão)
+> e [docs/WEBHOOK.md](docs/WEBHOOK.md) (eventos, assinatura, exemplos em Node, PHP e Python).
+
 Todas as rotas da linha usam `Authorization: Bearer <token da linha>` (ou `?token=`).
 A aba **API** de cada linha no painel mostra os exemplos prontos com a URL certa.
 
