@@ -240,6 +240,27 @@ cada evento:
   falharam aparecem em **Configurações › Entregas do webhook**, com botão para reenviar.
 - `mediaUrl` usa a variável `PUBLIC_URL` e exige o token da linha (`Authorization: Bearer`).
 
+## Área de atendimento (`/atendimento`)
+
+A tela do dia a dia de quem atende: **uma caixa de entrada com as conversas de todos os números**
+que a pessoa acessa (com filtro por número e a etiqueta do número em cada conversa) e um **telefone
+flutuante** que toca quando chega ligação em qualquer um deles. O **Ligar** deixa escolher o número de
+saída. Quem só atende entra direto aqui ao fazer login, sem ver QR, token ou configurações.
+
+**Quais números cada um acessa** é definido em **Usuários e grupos › grupo**: marque os números do
+grupo e escolha o perfil em cada um:
+
+| Perfil | Pode |
+|---|---|
+| Atendente | mensagens + receber e fazer ligações |
+| Só mensagens | só o chat |
+| Só ligações / Só receber ligações | só o telefone |
+| Supervisor | atendente + conectar o número (QR); usa também o painel |
+| Gerente | tudo no número, inclusive configurações e integrações |
+
+Use **Personalizar** para combinar permissões e **Todos os números / Perfil para todos** para grupos
+grandes. Uma pessoa em vários grupos soma os acessos.
+
 ## Atendimento no painel
 
 - **Mensagens** (aba de cada telefone): chat no estilo do WhatsApp, com responsável por conversa
