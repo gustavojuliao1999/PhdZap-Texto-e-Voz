@@ -62,8 +62,12 @@ os links de mídia (`mediaUrl`) venham com o endereço completo.
 - **Pelo menos uma vez:** se o seu servidor processar o evento mas demorar mais de 10 s para
   responder, o evento chega de novo. **Use o campo `id` para ignorar repetições** (ele é o mesmo em
   todas as tentativas do mesmo evento).
-- **Fila em memória** (até 1.000 eventos por linha): eventos ainda não entregues se perdem se o
-  gateway reiniciar. Para reconciliar, consulte `GET /api/v1/messages` e `GET /api/v1/calls`.
+- **Fila no banco:** eventos ainda não entregues sobrevivem a reinícios do gateway (ao subir, ele
+  tenta de novo na hora). Os que esgotam as tentativas ficam como **falha** e podem ser reenviados em
+  **Configurações › Entregas do webhook** (um a um ou todos) ou pela
+  [API de gestão](API.md#telefones-linhas). O histórico guarda entregues por 7 dias e falhas por 30.
+- **Alerta:** com `ALERT_WEBHOOK_URL` configurada no gateway, uma falha definitiva gera um aviso
+  (Slack, Discord ou similar).
 - A configuração (URL, segredo, eventos) é lida **na hora de cada envio**: trocar a URL vale para os
   eventos que ainda estão na fila; apagar a URL descarta a fila.
 
@@ -121,6 +125,11 @@ X-Webhook-Signature: sha256=5d2c1f…e9a0
 | `call.connected` | Conversa começou | [Ligação](#ligação) |
 | `call.ended` | Ligação encerrada (atendida ou não) | [Ligação](#ligação) |
 | `call.busy` | Ligaram com a linha ocupada (não atendida) | `{ "from": "5581…" }` |
+| `message.updated` | Mensagem editada ou transcrita | [Mensagem](#mensagem) (com `editedAt` ou `transcript`) |
+| `message.deleted` | Mensagem apagada para todos | [Mensagem](#mensagem) (com `deletedAt`, sem conteúdo) |
+| `conversation.updated` | Situação, responsável, nome ou notas da conversa mudaram | [Conversa](#conversa) |
+| `call.recording` | Gravação da ligação pronta | [Gravação](#gravação-e-transcrição) |
+| `call.transcript` | Transcrição da ligação pronta | [Gravação](#gravação-e-transcrição) |
 | `line.status` | Telefone conectou, caiu ou pediu QR | [Status da linha](#status-da-linha) |
 | `ping` | Botão **Testar webhook** | `{ "message": "Teste do webhook" }` |
 
@@ -156,6 +165,8 @@ X-Webhook-Signature: sha256=5d2c1f…e9a0
 | `text` | Texto, legenda da mídia, ou o emoji da reação. |
 | `media` | Em mídias: `mimetype`, `fileName`, `size` (bytes), `seconds`, `ptt` (`true` = áudio de voz). |
 | `mediaUrl` | Em mídias: onde baixar o arquivo ([como](#baixar-a-mídia)). |
+| `participant`, `participantName` | Em grupos: quem mandou (`remote` é o JID do grupo, `…@g.us`). |
+| `editedAt`, `deletedAt`, `transcript` | Em `message.updated` / `message.deleted`. |
 | `location` | Em localização: `latitude`, `longitude`, `name`, `address`. |
 | `contact` | Em contato: `name`, `vcard`. |
 | `replyTo` | Id da mensagem respondida; em reações, da mensagem reagida. |
@@ -178,8 +189,9 @@ X-Webhook-Signature: sha256=5d2c1f…e9a0
 | `reaction` | `text` = emoji (vazio = removida), `replyTo` | `{"type":"reaction","text":"❤️","replyTo":"3EB0…"}` |
 | `other` | `text` = tipo interno do WhatsApp (enquete, botões…) | `{"type":"other","text":"pollCreationMessageV3"}` |
 
-Só conversas individuais geram eventos (grupos, status e canais são ignorados). Mensagens apagadas
-e editadas não geram eventos.
+Conversas individuais sempre geram eventos; grupos só se a linha tiver **Receber e enviar mensagens
+de grupos** ligado; status e canais nunca. Edições e exclusões chegam como `message.updated` e
+`message.deleted`.
 
 ### Status de mensagem
 
@@ -233,6 +245,35 @@ da mensagem, não a da mudança de status.
 | `handler` | `browser` (atendente), `ws-bridge` (IA), `echo`, `silence`. |
 
 **Ligação perdida** = `call.ended` com `direction: "incoming"` e sem `connectedAt`.
+
+### Conversa
+
+`conversation.updated`:
+
+```json
+{ "remote": "5581992338229", "name": "Maria (VIP)", "notes": "Cliente desde 2021", "status": "resolved",
+  "assignedUserId": "cmu…", "assignedName": "Ana Souza", "updatedAt": "2026-10-04T14:02:11.000Z" }
+```
+
+`status`: `open` (aberta), `pending` (aguardando o cliente) ou `resolved` (resolvida). Quando o
+cliente escreve numa conversa resolvida ou aguardando, ela volta para `open` (e este evento sai).
+
+### Gravação e transcrição
+
+`call.recording` (a ligação precisa estar com **Gravar as ligações** ligado):
+
+```json
+{ "id": "C1A2B3D4E5F6", "remote": "5581992338229", "hasRecording": true, "recordingSeconds": 263,
+  "recordingUrl": "https://voz.suaempresa.com.br/api/v1/calls/C1A2B3D4E5F6/recording" }
+```
+
+Baixe com `Authorization: Bearer <token da linha>` (arquivo `audio/ogg`).
+
+`call.transcript`:
+
+```json
+{ "id": "C1A2B3D4E5F6", "remote": "5581992338229", "transcript": "Olá, gostaria de saber…" }
+```
 
 ### Status da linha
 
@@ -431,5 +472,6 @@ Docker, ex. `http://172.17.0.1:<porta>`), não `127.0.0.1`.
 | Eventos duplicados | Retentativas após timeout. Deduplique pelo `id`. |
 | `mediaUrl` sem domínio | Defina `PUBLIC_URL` no `.env` do gateway. |
 | Download da mídia retorna `401` | Falta `Authorization: Bearer <token da linha>`. |
-| Não chegam mensagens de grupos | Por padrão o gateway só trata conversas individuais. |
+| Não chegam mensagens de grupos | Ligue **Receber e enviar mensagens de grupos** nas Configurações do telefone. |
 | `remote` termina em `@lid` | O WhatsApp não revelou o número do contato; responda usando o mesmo valor em `to`. |
+| Eventos parados na fila | O evento mais antigo está em nova tentativa (a ordem é garantida por linha). Veja **Entregas do webhook**. |

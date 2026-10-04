@@ -230,14 +230,82 @@ cada evento:
 ```
 
 - Eventos: `message.received`, `message.sent` (pela API, pelo painel ou pelo celular),
-  `message.status` (`sent` → `delivered` → `read` → `played`), `call.incoming`, `call.dialing`,
-  `call.answered`, `call.connected`, `call.ended`, `call.busy` e `line.status`. Dá para escolher quais.
+  `message.status` (`sent` → `delivered` → `read` → `played`), `message.updated`, `message.deleted`,
+  `conversation.updated`, `call.incoming`, `call.dialing`, `call.answered`, `call.connected`,
+  `call.ended`, `call.busy`, `call.recording`, `call.transcript` e `line.status`. Dá para escolher quais.
 - Assinatura: `X-Webhook-Signature: sha256=<HMAC-SHA256(segredo, X-Webhook-Timestamp + "." + corpo)>`
   em hex. Confira antes de confiar no evento.
 - Responda 2xx em até 10 s. Se não responder, o envio é repetido após 5 s, 30 s e 2 min, mantendo a
-  ordem dos eventos de cada linha. A fila fica em memória: eventos pendentes se perdem se o gateway
-  reiniciar. O histórico continua no banco (`GET /api/v1/messages`).
+  ordem dos eventos de cada linha. A fila fica no banco (sobrevive a reinícios); as entregas que
+  falharam aparecem em **Configurações › Entregas do webhook**, com botão para reenviar.
 - `mediaUrl` usa a variável `PUBLIC_URL` e exige o token da linha (`Authorization: Bearer`).
+
+## Atendimento no painel
+
+- **Mensagens** (aba de cada telefone): chat no estilo do WhatsApp, com responsável por conversa
+  (**Assumir**), situação (aberta / aguardando cliente / resolvida, reabre quando o cliente escreve),
+  filtros (Abertas, Minhas, Sem responsável, Resolvidas), nome e notas internas do contato, e as
+  ligações na mesma linha do tempo das mensagens.
+- **Respostas rápidas:** digite `/` no chat. Cadastre em Configurações (`{nome}` e `{atendente}`
+  viram o nome do contato e o seu).
+- **Horário de atendimento** com resposta automática fora do horário (uma vez a cada 12 h por contato).
+- **Grupos** (opcional por telefone), mensagens editadas e apagadas, reações, figurinhas e áudios.
+- **Gravação das ligações** (opcional por telefone; avise os contatos, pela LGPD) e **transcrição**
+  de ligações e áudios de voz por uma API compatível com OpenAI (`TRANSCRIBE_API_KEY`;
+  `TRANSCRIBE_API_URL` aceita Groq ou um whisper local).
+- **Métricas** (`/admin/metrics`): ligações recebidas, atendidas e perdidas, espera e conversa médias,
+  mensagens, por dia, por hora e por atendente.
+- **Auditoria** (`/admin/audit`, administradores): logins e alterações, com segredos mascarados.
+- **Limite de envio** por telefone (padrão 20 por minuto e 1000 por dia) para proteger o número.
+
+## Produção
+
+**HTTPS** (Caddy com certificado automático): aponte o DNS do domínio para o servidor, libere as
+portas 80/443 e, no `.env`:
+
+```bash
+DOMAIN=voz.suaempresa.com.br
+PUBLIC_URL=https://voz.suaempresa.com.br
+SECURE_COOKIES=true
+TRUST_PROXY=true
+APP_BIND=127.0.0.1          # a porta 3000 fica só para o Caddy
+```
+
+```bash
+docker compose --profile https up -d
+```
+
+**Backup** do banco e das sessões do WhatsApp (guarda em `./backups`, apaga os de mais de 14 dias):
+
+```bash
+./scripts/backup.sh                      # agora
+0 3 * * * cd /caminho && ./scripts/backup.sh >> backups/backup.log 2>&1   # crontab, todo dia às 3h
+./scripts/restore.sh 20261004-030000     # restaurar (para o app, substitui banco e sessões)
+```
+
+**Operação:**
+
+| Variável | Para quê |
+|---|---|
+| `ALERT_WEBHOOK_URL` | Alertas (telefone fora do ar por 2 min, processo da linha caindo, webhook falhando) para Slack, Discord ou qualquer URL. |
+| `LOG_FORMAT=json` | Logs estruturados, uma linha JSON por evento. |
+| `MEDIA_CACHE_DAYS`, `MEDIA_CACHE_MAX_MB` | Limpeza do cache de mídia (padrão 30 dias e 5 GB). |
+| `RECORDINGS_DAYS` | Apaga gravações mais antigas (0 = guarda para sempre). |
+| `AUDIT_DAYS` | Tempo de guarda da auditoria (padrão 365). |
+| `ALLOW_PRIVATE_URLS` | Permite mídia de endereços da rede interna (bloqueado por padrão). |
+| `TZ` | Fuso do horário de atendimento, dos limites diários e das métricas. |
+
+Se a conexão com o WhatsApp cair, a linha reinicia e reconecta sozinha (sem novo QR).
+
+## Testes
+
+```bash
+npm test                                                           # unidade
+TEST_DATABASE_URL=postgresql://usuario:senha@localhost:5432/banco npm test   # + integração
+```
+
+A integração sobe o gateway com um WhatsApp simulado num *schema* descartável do banco informado
+(criado e apagado a cada execução).
 
 ## Bot / IA (`ws-bridge`)
 
@@ -260,6 +328,8 @@ que são muito verbosos.
 
 - **Uma ligação por linha por vez.** Uma ligação que chega com a linha ocupada não é atendida
   (evento `busy`). Para atender várias ao mesmo tempo, crie mais linhas.
-- Só voz 1:1. Sem vídeo e sem grupos.
+- Ligações: só voz 1:1, sem vídeo e sem chamadas em grupo (é uma limitação do WhatsApp num aparelho
+  vinculado).
+- Mensagens: só as recebidas ou enviadas depois de instalar; o histórico antigo do celular não é importado.
 - Use um número dedicado por linha. Ligações feitas pelo celular do mesmo número disputam a conta.
 - `data/` (ou o volume `appdata`) contém as sessões do WhatsApp. Trate como credencial, junto com o banco.

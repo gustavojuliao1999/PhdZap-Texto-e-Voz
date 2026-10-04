@@ -137,6 +137,9 @@ cabeçalhos `authorization, content-type, x-line-id`).
 | `ownerAgent` | string? | Nome de quem atendeu/ligou. |
 | `ownerUserId` | string? | Usuário do painel que ficou com a ligação. |
 | `ownerClientId` | string? | `clientId` que ficou com a ligação (só na API/WS, não no webhook). |
+| `hasRecording` | boolean? | Há gravação: [`GET /api/v1/calls/:id/recording`](#get-apiv1callsidrecording--gravação). |
+| `recordingSeconds` | number? | Duração da gravação. |
+| `transcript` | string? | Transcrição automática da gravação. |
 
 ### Mensagem (`Message`)
 
@@ -172,6 +175,10 @@ cabeçalhos `authorization, content-type, x-line-id`).
 | `location` | objeto? | `latitude`, `longitude`, `name`, `address`. |
 | `contact` | objeto? | `name`, `vcard`. |
 | `replyTo` | string? | Id da mensagem respondida (ou, numa reação, da mensagem reagida). |
+| `participant` / `participantName` | string? | Grupos: número e nome de quem mandou. |
+| `editedAt` | data? | A mensagem foi editada (o `text` já é o novo). |
+| `deletedAt` | data? | Apagada para todos: o conteúdo some (`text`, `media`). |
+| `transcript` | string? | Transcrição automática do áudio de voz (se ligada na linha). |
 | `status` | string | Enviadas: `pending` → `sent` → `delivered` → `read` → `played` (áudio ouvido), ou `error`. Recebidas: `delivered` até alguém ler pelo gateway, depois `read`. O status só avança, nunca volta. |
 | `agent` | string? | Quem enviou pelo gateway: nome do usuário do painel ou o `agent` informado na API (padrão `API`). Vazio em recebidas e nas enviadas pelo celular. |
 | `timestamp` | data | Data da mensagem no WhatsApp. |
@@ -180,11 +187,23 @@ cabeçalhos `authorization, content-type, x-line-id`).
 ### Conversa (`Chat`)
 
 ```json
-{ "remote": "5581992338229", "remoteJid": "5581992338229@s.whatsapp.net", "name": "Maria", "unread": 3, "last": { "…": "Message" } }
+{
+  "remote": "5581992338229", "remoteJid": "5581992338229@s.whatsapp.net",
+  "name": "Maria (VIP)", "profileName": "Maria", "isGroup": false,
+  "status": "open", "assignedUserId": "cmu…", "assignedName": "Ana Souza", "notes": "Cliente desde 2021",
+  "unread": 3, "last": { "…": "Message" }
+}
 ```
 
-`name` é o último `pushName` recebido; `unread` conta as recebidas ainda não lidas pelo gateway;
-`last` é a mensagem mais recente (reações não contam).
+| Campo | Descrição |
+|---|---|
+| `name` | Nome definido pela equipe ou, sem ele, o nome do perfil (`profileName`). Em grupos, o nome do grupo. |
+| `isGroup` | Conversa de grupo (`remote` é o JID `…@g.us`). |
+| `status` | `open` (aberta), `pending` (aguardando o cliente) ou `resolved` (resolvida). Volta para `open` quando o cliente escreve. |
+| `assignedUserId` / `assignedName` | Responsável pela conversa. |
+| `notes` | Notas internas (o contato não vê). |
+| `unread` | Recebidas ainda não lidas pelo gateway. |
+| `last` | Mensagem mais recente (reações não contam). |
 
 ### Linha pública (`Line`)
 
@@ -215,7 +234,8 @@ Resposta `200`: objeto [`Line`](#linha-pública-line).
 
 ### `GET /api/v1/calls`
 
-Ligação atual e as 100 últimas encerradas. Permissão: `view`.
+Ligação atual e as 100 últimas encerradas. Permissão: `view`. Com `?contact=<número>`, só as
+ligações com aquele contato.
 
 ```json
 { "current": { "…": "Call" }, "history": [ { "…": "Call" } ] }
@@ -239,6 +259,11 @@ curl -X POST $GW/api/v1/calls -H "Authorization: Bearer $TOKEN" \
 
 Resposta `201`: [`Call`](#ligação-call) com `status: "ringing"`. Erros: `409` linha ocupada ou número
 não encontrado no WhatsApp, `503` linha desconectada.
+
+### `GET /api/v1/calls/:id/recording` — gravação
+
+Arquivo `audio/ogg` (opus, mono) da ligação, com suporte a `Range`. Permissão: `view`. Existe quando a
+linha tem **Gravar as ligações** ligado (`recordCalls`); `404` se não houver gravação.
 
 ### `POST /api/v1/calls/:id/accept` — atender
 
@@ -276,7 +301,7 @@ Campos comuns:
 
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `to` | string \| number | **Obrigatório.** Número com DDI e DDD (testa com e sem o 9º dígito) ou um JID `…@s.whatsapp.net` / `…@lid`. |
+| `to` | string \| number | **Obrigatório.** Número com DDI e DDD (testa com e sem o 9º dígito) ou um JID `…@s.whatsapp.net` / `…@lid` / `…@g.us` (grupos, se ligados na linha). |
 | `type` | string | `text` (padrão quando há só `text`), `image`, `video`, `audio`, `document`, `sticker`, `location` ou `reaction`. Com `url`/`base64` e sem `type`, o tipo vem do mimetype. |
 | `replyTo` | string | Id de uma mensagem **desta linha** para responder citando. Obrigatório em `reaction`. |
 | `agent` | string | Nome de quem envia (até 60). Padrão `API`. Usuários do painel usam o próprio nome. |
@@ -334,8 +359,13 @@ curl -X POST $GW/api/v1/messages -H "Authorization: Bearer $TOKEN" -H "content-t
 **Resposta `201`:** a [`Message`](#mensagem-message) enviada (`direction: "outgoing"`, `status: "sent"`).
 Depois chegam as mudanças de status (`delivered`, `read`…) pelo WebSocket e pelo webhook.
 
-Erros comuns: `400` corpo inválido / mídia não baixou / áudio não converteu, `404` `replyTo` não
-encontrado, `409` número não está no WhatsApp, `413` arquivo grande demais, `503` linha desconectada.
+Erros comuns: `400` corpo inválido / mídia não baixou / áudio não converteu / URL interna, `404`
+`replyTo` não encontrado, `409` número não está no WhatsApp, `413` arquivo grande demais, `429`
+limite de envio da linha atingido, `503` linha desconectada.
+
+> **URLs de mídia** precisam ser públicas: endereços internos (localhost, rede privada, metadados de
+> nuvem) são recusados, inclusive depois de redirecionamentos. Para liberar num ambiente fechado,
+> use `ALLOW_PRIVATE_URLS=true` no gateway.
 
 ### `GET /api/v1/messages` — histórico
 
@@ -386,6 +416,37 @@ Lista de [`Chat`](#conversa-chat), da conversa mais recente para a mais antiga.
 
 Marca toda a conversa como lida. Resposta `200 {"ok":true}`.
 
+### `GET /api/v1/contacts/:numero`
+
+Dados de atendimento da conversa e as 20 últimas ligações com o contato:
+
+```json
+{ "remote": "5581992338229", "name": "Maria (VIP)", "notes": "…", "status": "open",
+  "assignedUserId": "cmu…", "assignedName": "Ana Souza", "updatedAt": "…", "calls": [ { "…": "Call" } ] }
+```
+
+### `PATCH /api/v1/contacts/:numero`
+
+Altera o atendimento. Todos os campos são opcionais:
+
+| Campo | Descrição |
+|---|---|
+| `name` | Nome na equipe (`null` volta a usar o do perfil). |
+| `notes` | Notas internas (até 10.000 caracteres). |
+| `status` | `open`, `pending` ou `resolved`. |
+| `assignedUserId` | Id de um usuário com permissão `messages` na linha, `"me"` (usuário logado no painel) ou `null`. |
+
+Gera o evento `contact` (WebSocket) e `conversation.updated` (webhook).
+
+### `GET /api/v1/agents`
+
+Usuários que podem atender as mensagens da linha: `[{ "id", "name" }]`.
+
+### `GET /api/v1/quick-replies`
+
+Respostas rápidas da linha e as globais: `[{ "id", "shortcut", "text", "global" }]`. No texto,
+`{nome}` e `{atendente}` são trocados pelo painel na hora de usar.
+
 ### `GET /api/v1/contacts/:numero/photo`
 
 Foto de perfil do contato: `302` para a imagem (URL temporária do WhatsApp) ou `204` sem foto
@@ -414,6 +475,9 @@ Mensagens JSON (texto). O servidor envia `ping` a cada 25 s; reconecte se a cone
 | `message` | `lineId`, `message` | Mensagem recebida ou enviada (qualquer origem). Exige `messages`. |
 | `message-status` | `lineId`, `message` | Status de uma mensagem enviada avançou. Exige `messages`. |
 | `chat-read` | `lineId`, `remote` | Conversa marcada como lida por alguém. Exige `messages`. |
+| `message-update` | `lineId`, `message` | Mensagem editada, apagada ou transcrita. Exige `messages`. |
+| `contact` | `lineId`, `contact` | Atendimento da conversa mudou (situação, responsável, nome, notas). Exige `messages`. |
+| `call-update` | `lineId`, `kind`, `call` | Gravação (`kind: "recording"`) ou transcrição (`"transcript"`) da ligação pronta. |
 
 Códigos de fechamento: `4001` linha removida ou token alterado; `4002` permissões alteradas
 (reconecte).
@@ -529,6 +593,10 @@ Base: `/admin/api`. Autenticação: `Authorization: Bearer <ADMIN_API_KEY>` ou s
 | `POST /admin/api/lines/:id/restart` | `connection` | Reinicia o processo da linha. |
 | `POST /admin/api/lines/:id/webhook-test` | `settings` | Envia um `ping` ao webhook: `{"ok","status","ms","error"}`. |
 | `GET /admin/api/calls?line=:id` | `view` | Últimas 200 ligações (todas as linhas visíveis sem `line`). |
+| `GET /admin/api/lines/:id/webhook-deliveries?status=&limit=` | `settings` | Entregas do webhook: `{ summary, deliveries }` (`status`: `pending`, `delivered`, `failed`). |
+| `POST /admin/api/lines/:id/webhook-deliveries/:entrega/retry` | `settings` | Reenvia uma entrega. |
+| `POST /admin/api/lines/:id/webhook-deliveries/retry-failed` | `settings` | Reenvia todas as que falharam: `{ requeued }`. |
+| `GET /admin/api/metrics?days=&line=` | `view` | Métricas de atendimento (ligações, espera, conversa, mensagens, por dia/hora/atendente). |
 
 Configurações da linha:
 
@@ -545,6 +613,13 @@ Configurações da linha:
 | `webhookUrl` | string | URL do webhook (`http(s)`). Vazio = desligado. |
 | `webhookSecret` | string | Segredo da assinatura (até 200). |
 | `webhookEvents` | string[] | Eventos do webhook (vazio = todos). Veja [WEBHOOK.md](WEBHOOK.md). |
+| `rateLimitPerMinute` / `rateLimitPerDay` | número | Limite de mensagens enviadas pelo gateway (0 = sem limite). Padrão 20/min e 1000/dia. |
+| `businessHoursEnabled` | boolean | Usa o horário de atendimento. |
+| `businessHours` | objeto | Por dia da semana (`"0"` = domingo … `"6"` = sábado): `{"1": [["08:00","18:00"]], "0": []}`. Fuso: `TZ` do servidor. |
+| `offHoursMessage` | string | Resposta automática fora do horário (uma vez a cada 12 h por contato; `{nome}` = primeiro nome). |
+| `groupsEnabled` | boolean | Recebe e envia mensagens de grupos. |
+| `recordCalls` | boolean | Grava as ligações (avise os contatos — LGPD). |
+| `transcribeCalls` / `transcribeVoiceNotes` | boolean | Transcreve gravações / áudios de voz recebidos (precisa de `TRANSCRIBE_API_KEY` ou `TRANSCRIBE_API_URL`). |
 
 ```bash
 curl -X PATCH $GW/admin/api/lines/1b9431a0 -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -564,6 +639,21 @@ curl -X PATCH $GW/admin/api/lines/1b9431a0 -H "Authorization: Bearer $ADMIN_API_
 | `POST /admin/api/groups` | `{"name","description?","memberIds?","lines?":[{"lineId","permissions":["view","messages",…]}]}` |
 | `PATCH /admin/api/groups/:id` | **`name` obrigatório**; `memberIds`/`lines` substituem a lista quando enviados. |
 | `DELETE /admin/api/groups/:id` | — |
+
+### Respostas rápidas
+
+| Rota | Permissão | Corpo |
+|---|---|---|
+| `GET /admin/api/quick-replies?line=` | `view` | — |
+| `POST /admin/api/quick-replies` | `settings` na linha (ou admin, se global) | `{"lineId"?, "shortcut", "text"}` — atalho: letras, números, `_` ou `-` (até 30). Sem `lineId` = vale para todas as linhas. |
+| `PATCH /admin/api/quick-replies/:id` | idem | `{"shortcut", "text"}` |
+| `DELETE /admin/api/quick-replies/:id` | idem | — |
+
+### Auditoria (só administradores)
+
+`GET /admin/api/audit?limit=&before=&line=&action=&q=` — ações no painel e na API de gestão
+(logins, telefones, webhook, usuários, grupos, respostas rápidas), mais recentes primeiro. `action`
+filtra por prefixo (`line.`, `user.`…); `q` busca em quem fez e no alvo. Segredos aparecem como `***`.
 
 ### Eventos do painel
 
@@ -585,7 +675,7 @@ Formato: `{"error": "mensagem"}`.
 | `404` | Rota, linha, ligação ou mensagem não encontrada. |
 | `409` | Conflito ou recusa do WhatsApp: linha ocupada, ligação já atendida por outro, número fora do WhatsApp, mídia expirada. |
 | `413` | Corpo ou arquivo grande demais. |
-| `429` | Muitas tentativas de login. |
+| `429` | Limite de envio de mensagens da linha atingido, ou muitas tentativas de login. |
 | `503` | Linha parada ou WhatsApp desconectado. |
 | `504` | A linha não respondeu em 45 s. |
 | `500` | Erro interno (veja os logs). |
@@ -602,7 +692,8 @@ Formato: `{"error": "mensagem"}`.
 | Arquivo enviado | 25 MB |
 | Texto | 65.536 caracteres; legenda 4.096 |
 | Histórico de mensagens por página | 500 |
-| Conversas | só individuais (grupos/status/canais ignorados) |
+| Envio de mensagens | por linha, configurável (padrão 20/min e 1000/dia) |
+| Conversas | individuais; grupos se `groupsEnabled`; status e canais ignorados |
 
 > **Boas práticas:** o envio de mensagens usa o WhatsApp comum (não a API oficial). Envio em massa
 > ou para quem não tem o seu número salvo aumenta o risco de banimento. Respeite intervalos e só
