@@ -1,0 +1,16 @@
+# Proxy HTTPS do docker-compose.https.yml.
+#
+# DOMAIN pode ter vários endereços separados por vírgula:
+#   voz.suaempresa.com.br       → certificado Let's Encrypt (DNS apontando + portas 80/443 abertas)
+#   localhost, 192.168.0.10     → certificado da CA interna do Caddy (dev; o navegador avisa uma vez)
+{$DOMAIN:localhost} {
+	# Mídia em base64 até 25 MB.
+	request_body {
+		max_size 36MB
+	}
+	# WebSocket passa direto; flush_interval -1 = sem buffer (vídeo MJPEG e áudio com Range).
+	# O Caddy já envia Host, X-Forwarded-Proto e X-Forwarded-For.
+	reverse_proxy app:3000 {
+		flush_interval -1
+	}
+}

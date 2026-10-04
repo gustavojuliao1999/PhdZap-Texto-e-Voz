@@ -1,0 +1,54 @@
+# PhdZap + PostgreSQL + HTTPS (Caddy), com porta de dev.
+#
+#   cp .env.example .env    # defina ADMIN_API_KEY, POSTGRES_PASSWORD e DOMAIN
+#   docker compose -f docker-compose.https.yml up -d --build
+#
+# Portas:
+#   80/443  (HTTPS_BIND) → Caddy, acesso externo. Certificado automático para DOMAIN.
+#   3000    (DEV_BIND)   → app direto em HTTP, para dev/debug. Por padrão só em 127.0.0.1;
+#                          http://localhost:3000 libera microfone sem HTTPS.
+#   5432    (127.0.0.1)  → Postgres (Prisma Studio, app fora do Docker).
+#
+# Usa os mesmos volumes do docker-compose.yml (mesmo projeto): troque um pelo outro sem perder dados.
+
+services:
+  db:
+    extends:
+      file: docker-compose.yml
+      service: db
+
+  app:
+    extends:
+      file: docker-compose.yml
+      service: app
+    depends_on:
+      db:
+        condition: service_healthy
+    # Sempre atrás do Caddy: cookie Secure e IP real do X-Forwarded-For (ignora o .env).
+    environment:
+      SECURE_COOKIES: "true"
+      TRUST_PROXY: "true"
+    ports: !override
+      - "${DEV_BIND:-127.0.0.1}:${DEV_PORT:-3000}:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificados (Let's Encrypt e CA interna). Não perca, ou o Let's Encrypt pode limitar a emissão.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  appdata:
+  caddy_data:
+  caddy_config:

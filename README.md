@@ -340,6 +340,34 @@ APP_BIND=127.0.0.1                         # porta 3000 só para o proxy (se ele
 Depois: `docker compose up -d`. Teste abrindo `https://SEU_GATEWAY/atendimento` e fazendo uma ligação:
 o navegador precisa pedir o microfone.
 
+### HTTPS pronto (Caddy): `docker-compose.https.yml`
+
+Se não tiver um proxy, use o compose com Caddy, que já faz tudo da lista acima (certificado,
+WebSocket, sem buffer, 36 MB, redirecionamento) e liga `SECURE_COOKIES` e `TRUST_PROXY` sozinho.
+Usa os mesmos volumes do `docker-compose.yml`: dá para trocar um pelo outro sem perder dados.
+
+```bash
+# .env
+DOMAIN=voz.suaempresa.com.br, localhost   # vírgula separa vários endereços
+PUBLIC_URL=https://voz.suaempresa.com.br
+
+docker compose -f docker-compose.https.yml up -d --build
+```
+
+| Porta | Para quê | Variável |
+|---|---|---|
+| 80, 443 (tcp/udp) | HTTPS externo (Caddy). 80 só redireciona e valida o Let's Encrypt | `HTTPS_BIND`, `HTTP_PORT`, `HTTPS_PORT` |
+| 3000 | dev: app direto em HTTP, sem passar pelo Caddy. Só em `127.0.0.1` por padrão | `DEV_BIND`, `DEV_PORT` |
+| 5432 | Postgres em `127.0.0.1` (Prisma Studio, app fora do Docker) | `POSTGRES_PORT` |
+
+- **Domínio público:** aponte o DNS para o servidor e libere 80 e 443 no firewall; o Caddy pega o
+  certificado do Let's Encrypt sozinho.
+- **Dev / rede local:** `DOMAIN=localhost, 192.168.0.10` (IP da sua máquina). O Caddy emite um
+  certificado da CA interna dele; o navegador avisa uma vez e depois libera o microfone, inclusive
+  no celular. Para não ter aviso, instale a CA:
+  `docker compose -f docker-compose.https.yml cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+- `http://localhost:3000` (porta de dev) também libera o microfone, por ser `localhost`.
+
 **Backup** do banco e das sessões do WhatsApp (guarda em `./backups`, apaga os de mais de 14 dias):
 
 ```bash
