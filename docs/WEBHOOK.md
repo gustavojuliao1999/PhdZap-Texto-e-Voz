@@ -135,6 +135,9 @@ X-Webhook-Signature: sha256=5d2c1f…e9a0
 
 `ping` é sempre enviado no teste, mesmo que não esteja na lista de eventos.
 
+Não geram eventos: as mensagens antigas que chegam do celular (histórico e sincronização) e tudo de
+**contatos ocultos** (Configurações › Contatos ocultos).
+
 ### Mensagem
 
 `message.received` e `message.sent`:

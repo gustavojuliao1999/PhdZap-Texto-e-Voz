@@ -4,9 +4,11 @@
  *
  * Variáveis: LINE_CONFIG (JSON de LineConfig), LINE_AUTH_DIR.
  */
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { VoipClient } from "baileys-caller";
 import { recordCall } from "../audio/recorder.js";
+import { hiddenMatcher } from "../hidden.js";
 import { CallManager } from "../call-manager.js";
 import { floatToPcm16, pcm16ToFloat } from "../audio/pcm.js";
 import { echoHandler, silenceHandler } from "../handlers/echo.js";
@@ -26,10 +28,12 @@ const send = (msg: WorkerMessage): void => { process.send!(msg); };
 let line: LineConfig = JSON.parse(process.env.LINE_CONFIG ?? "{}");
 const authDir = process.env.LINE_AUTH_DIR!;
 
+let isHidden = hiddenMatcher(line.hiddenContacts ?? []);
 const policy = {
   inboundMode: line.inboundMode,
   inboundAnswerDelayMs: line.inboundAnswerDelayMs,
   maxCallDurationMs: line.maxCallDurationMs,
+  isHidden: (remote: string) => isHidden(remote),
 };
 
 /** Atendimento humano: o áudio vai/vem pelo navegador, via processo principal. */
@@ -49,11 +53,23 @@ const handlers: Record<string, CallHandler> = {
   "ws-bridge": createWsBridgeHandler(line.bridgeUrl, line.bridgeSampleRate),
 };
 
+// Sem sessão salva = vai vincular agora. Como "computador" (Desktop), o celular envia o histórico
+// completo; a escolha fica gravada para a sessão continuar se apresentando igual.
+const desktopMarker = path.join(authDir, "..", "desktop-link");
+const linkAsDesktop = !existsSync(path.join(authDir, "creds.json")) || existsSync(desktopMarker);
+if (linkAsDesktop) { mkdirSync(path.dirname(desktopMarker), { recursive: true }); writeFileSync(desktopMarker, ""); }
+
 const client = new VoipClient({
   authDir,
   printQrInTerminal: false,
   incomingAudioSource: "stream",
   incomingDurationMs: line.maxCallDurationMs,
+  socketOptions: (baileys: any) => ({
+    // Guarda todo histórico que o celular mandar (o padrão do Baileys descarta o FULL).
+    shouldSyncHistoryMessage: () => true,
+    syncFullHistory: true,
+    ...(linkAsDesktop ? { browser: baileys.Browsers.macOS("Desktop") } : {}),
+  }),
 });
 const whatsapp = new WhatsAppConnection(client, authDir);
 const manager = new CallManager(client, policy, handlers, handlers[line.handler] ?? silenceHandler);
@@ -85,6 +101,8 @@ whatsapp.on("lost", () => setTimeout(() => process.exit(RESTART_EXIT_CODE), 500)
 messages.on("message", (message, raw) => send({ t: "event", event: { type: "message", message, raw } }));
 messages.on("status", (s) => send({ t: "event", event: { type: "message-status", ...s } }));
 messages.on("update", (u) => send({ t: "event", event: { type: "message-update", ...u } }));
+messages.on("history", (h) => send({ t: "event", event: { type: "history", ...h } }));
+messages.on("contacts", (contacts) => send({ t: "event", event: { type: "contacts", contacts } }));
 
 const requireSession = (callId: string) => {
   const s = manager.get(callId);
@@ -110,6 +128,7 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
     }
     case "configure": {
       line = c.config;
+      isHidden = hiddenMatcher(line.hiddenContacts ?? []);
       Object.assign(policy, {
         inboundMode: line.inboundMode,
         inboundAnswerDelayMs: line.inboundAnswerDelayMs,
@@ -126,6 +145,8 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
     case "download-media": return messages.download(c.raw);
     case "mark-read": return messages.markRead(c.raws);
     case "profile-picture": return messages.profilePicture(c.jid);
+    case "fetch-history": return messages.fetchHistory(c.raw, c.count);
+    case "sync-contacts": return messages.syncContacts();
     case "logout": {
       await whatsapp.logout();
       // O stack WASM não reinicializa no mesmo processo: o principal sobe outro.

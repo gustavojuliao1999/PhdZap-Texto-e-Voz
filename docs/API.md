@@ -87,6 +87,19 @@ cabeçalhos `authorization, content-type, x-line-id`).
 | `settings` | alterar configurações (inclui webhook) |
 | `integrations` | ver o token, iframes, SDK e API; gerar novo token |
 
+### Testar no Postman
+
+Baixe a coleção com todas as rotas, já apontando para este gateway:
+[**whatsapp-voice-gateway.postman_collection.json**](http://localhost:3000/docs/postman.json).
+
+1. No Postman: **Import** › arraste o arquivo.
+2. Na coleção, aba **Variables**, preencha `lineToken` (token da linha), `adminKey` (`ADMIN_API_KEY`)
+   e `numero` (contato de teste, com DDI e DDD).
+3. As pastas **API da linha** e **API de gestão** já usam o token certo em cada rota. Ids como
+   `messageId`, `callId` e `lineId` também são variáveis: copie da resposta de uma listagem.
+
+O mesmo arquivo abre no Insomnia, no Bruno e no Hoppscotch.
+
 ---
 
 ## Convenções
@@ -189,7 +202,7 @@ cabeçalhos `authorization, content-type, x-line-id`).
 ```json
 {
   "remote": "5581992338229", "remoteJid": "5581992338229@s.whatsapp.net",
-  "name": "Maria (VIP)", "profileName": "Maria", "isGroup": false,
+  "name": "Maria (VIP)", "teamName": "Maria (VIP)", "phoneName": "Maria Souza", "profileName": "Maria", "isGroup": false,
   "status": "open", "assignedUserId": "cmu…", "assignedName": "Ana Souza", "notes": "Cliente desde 2021",
   "unread": 3, "last": { "…": "Message" }
 }
@@ -197,7 +210,8 @@ cabeçalhos `authorization, content-type, x-line-id`).
 
 | Campo | Descrição |
 |---|---|
-| `name` | Nome definido pela equipe ou, sem ele, o nome do perfil (`profileName`). Em grupos, o nome do grupo. |
+| `name` | Nome a mostrar: o da equipe (`teamName`), senão o da agenda do celular (`phoneName`), senão o do perfil (`profileName`). Em grupos, o nome do grupo. |
+| `teamName` / `phoneName` / `profileName` | Nome dado pela equipe no painel / salvo na agenda do celular / do perfil no WhatsApp. |
 | `isGroup` | Conversa de grupo (`remote` é o JID `…@g.us`). |
 | `status` | `open` (aberta), `pending` (aguardando o cliente) ou `resolved` (resolvida). Volta para `open` quando o cliente escreve. |
 | `assignedUserId` / `assignedName` | Responsável pela conversa. |
@@ -381,8 +395,9 @@ Ordem: **mais recentes primeiro**. Inclui reações (`type: "reaction"`).
 curl "$GW/api/v1/messages?contact=5581992338229&limit=50" -H "Authorization: Bearer $TOKEN"
 ```
 
-> Só existem no gateway as mensagens recebidas/enviadas depois que a linha passou a usar esta
-> versão. O histórico antigo do celular não é importado.
+> O gateway guarda o que chega depois de vinculado e o **histórico que o celular envia**: ao
+> vincular, o celular manda as conversas recentes (ou todas, num vínculo novo); mensagens mais
+> antigas de uma conversa vêm com [`POST /api/v1/chats/:numero/sync`](#post-apiv1chatsnumerosync--buscar-mensagens-antigas-no-celular).
 
 ### `GET /api/v1/messages/:id/media` — baixar a mídia
 
@@ -411,6 +426,39 @@ Permissão: `messages`.
 ### `GET /api/v1/chats`
 
 Lista de [`Chat`](#conversa-chat), da conversa mais recente para a mais antiga.
+
+### `POST /api/v1/chats/:numero/sync` — buscar mensagens antigas no celular
+
+Pede ao celular até 50 mensagens anteriores à mais antiga que o gateway tem da conversa. Resposta
+`202 {"requested":true}` na hora; as mensagens chegam em seguida (alguns segundos, se o celular
+estiver com internet), entram no histórico (`GET /api/v1/messages`) como lidas e geram o evento
+`history` no WebSocket. Chame de novo para ir mais para trás. Para todas as conversas de uma vez,
+use a [sincronização completa](#histórico-e-agenda-do-celular).
+
+Erros: `409` a conversa ainda não tem nenhuma mensagem no gateway (falta a referência), `503`
+linha desconectada.
+
+### `GET /api/v1/contacts` — pesquisar contatos
+
+Agenda do telefone, como na pesquisa do WhatsApp Web: contatos salvos no celular, quem já mandou
+mensagem e os nomes dados pela equipe.
+
+| Parâmetro | Descrição |
+|---|---|
+| `q` | Parte do nome (equipe, agenda ou perfil; sem diferenciar maiúsculas) ou do número. Vazio = todos. |
+| `limit` | 1 a 500 (padrão 50). |
+
+```bash
+curl "$GW/api/v1/contacts?q=maria" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+[{ "remote": "5581992338229", "remoteJid": "5581992338229@s.whatsapp.net", "name": "Maria Souza",
+   "phoneName": "Maria Souza", "pushName": "Mari", "hasChat": true }]
+```
+
+Contatos com conversa (`hasChat`) vêm primeiro. Para conversar com um contato sem conversa, envie
+uma mensagem para o `remote` dele.
 
 ### `POST /api/v1/chats/:numero/read`
 
@@ -478,6 +526,10 @@ Mensagens JSON (texto). O servidor envia `ping` a cada 25 s; reconecte se a cone
 | `message-update` | `lineId`, `message` | Mensagem editada, apagada ou transcrita. Exige `messages`. |
 | `contact` | `lineId`, `contact` | Atendimento da conversa mudou (situação, responsável, nome, notas). Exige `messages`. |
 | `call-update` | `lineId`, `kind`, `call` | Gravação (`kind: "recording"`) ou transcrição (`"transcript"`) da ligação pronta. |
+| `history` | `lineId`, `remotes`, `added`, `syncType` | Chegaram mensagens antigas do celular nessas conversas (recarregue o histórico delas). Exige `messages`. |
+| `sync` | `lineId`, `sync` | Andamento da [sincronização completa](#histórico-e-agenda-do-celular). Exige `messages`. |
+
+Contatos ocultos não geram eventos.
 
 Códigos de fechamento: `4001` linha removida ou token alterado; `4002` permissões alteradas
 (reconecte).
@@ -626,6 +678,31 @@ curl -X PATCH $GW/admin/api/lines/1b9431a0 -H "Authorization: Bearer $ADMIN_API_
   -H "content-type: application/json" \
   -d '{"webhookUrl":"https://meusistema.com/whatsapp","webhookSecret":"whs_…","webhookEvents":["message.received","call.ended"]}'
 ```
+
+### Histórico e agenda do celular
+
+| Rota | Permissão | Descrição |
+|---|---|---|
+| `POST /admin/api/lines/:id/sync-history` | `settings` | Inicia a sincronização completa em segundo plano: baixa de novo a agenda do celular e, conversa por conversa, pede as mensagens antigas (50 por vez) até o início. Resposta `202` com o andamento; `409` se já estiver rodando. |
+| `GET /admin/api/lines/:id/sync-history` | `settings` | Andamento: `{ running, startedAt, finishedAt, chats, done, added, contacts, error? }`. |
+
+O celular precisa estar ligado e com internet. Conversas que nunca passaram pelo gateway não têm
+referência para pedir o histórico: elas chegam ao **vincular de novo** o telefone (Desconectar e
+ler o QR), quando o celular envia o histórico completo.
+
+### Contatos ocultos (só administradores)
+
+Números cujas mensagens e ligações **continuam gravadas**, mas não aparecem no painel, no
+atendimento, na API (`/api/v1/*`) nem no webhook, e não geram eventos. O gateway não atende nem
+recusa as ligações deles (tocam só no celular), e a API recusa enviar ou ligar para eles (`403`).
+A comparação ignora o 9º dígito.
+
+| Rota | Descrição |
+|---|---|
+| `PATCH /admin/api/lines/:id` | Campo `hiddenContacts`: lista de números (ou texto, um por linha). Substitui a lista. |
+| `POST /admin/api/lines/:id/hidden-contacts` | `{"remote":"5581999999999"}` oculta um número; com `"hidden": false`, mostra de novo. Resposta: `{ hiddenContacts }`. |
+
+`hiddenContacts` só aparece em `GET /admin/api/lines` para administradores.
 
 ### Usuários e grupos (só administradores)
 

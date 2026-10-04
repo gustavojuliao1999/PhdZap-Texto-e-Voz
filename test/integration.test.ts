@@ -141,6 +141,75 @@ describe("gateway (integração)", { skip: !BASE_URL && "defina TEST_DATABASE_UR
     assert.equal(m.totals.callsAnswered, 1);
   });
 
+  it("agenda: contatos do celular e do perfil aparecem na pesquisa por nome e número", async () => {
+    await emit({ type: "contacts", contacts: [{ remote: "5581444440000", remoteJid: "5581444440000@s.whatsapp.net", phoneName: "Dona Maria Padaria", pushName: "Maria" }] });
+    const byName = await until(async () => { const l = await (await line("GET", "/contacts?q=padaria")).json(); return l.length && l; });
+    assert.equal(byName[0].remote, "5581444440000");
+    assert.equal(byName[0].name, "Dona Maria Padaria");
+    assert.equal(byName[0].hasChat, false);
+    const byNumber = await (await line("GET", "/contacts?q=8888")).json();
+    assert.ok(byNumber.some((c: any) => c.remote === "5581888880000" && c.pushName === "Bia" && c.hasChat));
+    // Nome da agenda vale na lista de conversas (abaixo do nome dado pela equipe).
+    await emit({ type: "contacts", contacts: [{ remote: "5581888880000", remoteJid: "5581888880000@s.whatsapp.net", phoneName: "Bia Cliente" }] });
+    const chat = await until(async () => (await (await line("GET", "/chats")).json()).find((c: any) => c.remote === "5581888880000" && c.phoneName));
+    assert.equal(chat.name, "Bia Cliente");
+    assert.equal(chat.profileName, "Bia");
+  });
+
+  it("histórico do celular: grava sem duplicar e sem virar não lida", async () => {
+    const old = { id: "OLD1", direction: "incoming", remote: "5581888880000", remoteJid: "5581888880000@s.whatsapp.net", type: "text", text: "de 2019", status: "delivered", timestamp: "2019-05-01T12:00:00.000Z" };
+    await emit({ type: "history", syncType: "INITIAL_BOOTSTRAP", messages: [{ message: old, raw: "{}" }, { message: old, raw: "{}" }] });
+    const list = await until(async () => { const l = await (await line("GET", "/messages?contact=5581888880000&limit=500")).json(); return l.some((m: any) => m.id === "OLD1") && l; });
+    assert.equal(list.filter((m: any) => m.id === "OLD1").length, 1);
+    assert.equal(list.find((m: any) => m.id === "OLD1").status, "read");
+    const chat = (await (await line("GET", "/chats")).json()).find((c: any) => c.remote === "5581888880000");
+    assert.equal(chat.unread, 0);
+  });
+
+  it("buscar mensagens antigas de uma conversa e sincronizar tudo", async () => {
+    assert.equal((await line("POST", "/chats/5581888880000/sync")).status, 202);
+    await until(async () => (await (await line("GET", "/messages?contact=5581888880000&limit=500")).json()).some((m: any) => m.id === "H1"));
+    // Conversa sem mensagens: não há referência para pedir ao celular.
+    assert.equal((await line("POST", "/chats/5581000000000/sync")).status, 409);
+    assert.equal((await admin("POST", `/lines/${lineId}/sync-history`)).status, 202);
+    const st = await until(async () => { const x = await (await admin("GET", `/lines/${lineId}/sync-history`)).json(); return !x.running && x.finishedAt && x; }, 20_000);
+    assert.equal(st.error, undefined);
+    assert.ok(st.added >= 1);
+    assert.equal(st.contacts, 1);
+    const found = await (await line("GET", "/contacts?q=carlos")).json();
+    assert.equal(found[0]?.name, "Carlos da Agenda");
+  });
+
+  it("contato oculto: gravado, mas fora da API e da pesquisa", async () => {
+    const hid = "558133330000"; // gravado sem o 9º dígito
+    await emit({ type: "message", raw: "{}", message: { id: "HID1", direction: "incoming", remote: hid, remoteJid: `${hid}@s.whatsapp.net`, pushName: "Particular", type: "text", text: "segredo", status: "delivered", timestamp: new Date().toISOString() } });
+    await until(async () => (await (await line("GET", "/chats")).json()).some((c: any) => c.remote === hid));
+    // Com o 9º dígito: a comparação ignora.
+    const r = await admin("PATCH", `/lines/${lineId}`, { hiddenContacts: "55 81 9 3333-0000" });
+    assert.deepEqual((await r.json()).hiddenContacts, ["5581933330000"]);
+    assert.ok(!(await (await line("GET", "/chats")).json()).some((c: any) => c.remote === hid));
+    assert.ok(!(await (await line("GET", "/messages?limit=500")).json()).some((m: any) => m.remote === hid));
+    assert.equal((await line("GET", `/messages?contact=${hid}`)).status, 404);
+    assert.equal((await line("GET", `/contacts/${hid}`)).status, 404);
+    assert.ok(!(await (await line("GET", "/contacts?q=particular")).json()).length);
+    assert.equal((await line("POST", "/messages", { to: hid, text: "x" })).status, 403);
+    // Ligação dele vai para o banco, mas não para a API.
+    const t = new Date().toISOString();
+    await emit({ type: "incoming", call: { id: "CH", direction: "incoming", remote: hid, status: "ringing", startedAt: t } });
+    assert.equal((await (await line("GET", "/line")).json()).current, null);
+    await emit({ type: "ended", call: { id: "CH", direction: "incoming", remote: hid, status: "ended", startedAt: t, endedAt: t } });
+    const db = new PrismaClient({ datasourceUrl: dbUrl });
+    try {
+      await until(() => db.call.count({ where: { callId: "CH" } }));
+      assert.equal(await db.message.count({ where: { remote: hid } }), 1);
+    } finally { await db.$disconnect(); }
+    assert.ok(!(await (await line("GET", "/calls")).json()).history.some((c: any) => c.remote === hid));
+    // Mostrar de novo pelo atalho do painel.
+    const un = await admin("POST", `/lines/${lineId}/hidden-contacts`, { remote: hid, hidden: false });
+    assert.deepEqual((await un.json()).hiddenContacts, []);
+    assert.ok((await (await line("GET", "/chats")).json()).some((c: any) => c.remote === hid));
+  });
+
   it("auditoria registra as alterações sem segredos", async () => {
     await admin("PATCH", `/lines/${lineId}`, { webhookSecret: "super-secreto" });
     const rows = await (await admin("GET", "/audit?action=line.update")).json();

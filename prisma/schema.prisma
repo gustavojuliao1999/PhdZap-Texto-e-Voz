@@ -88,6 +88,8 @@ model Line {
   recordCalls          Boolean     @default(false)
   transcribeCalls      Boolean     @default(false)
   transcribeVoiceNotes Boolean     @default(false)
+  /// Números ocultos (só dígitos): gravados, mas fora do painel, da API e do webhook. Só administradores veem.
+  hiddenContacts       String[]    @default([])
   groups               GroupLine[]
   calls                Call[]
   messages             Message[]
@@ -209,6 +211,11 @@ model Contact {
   remote          String
   /// Nome definido pela equipe (sobrepõe o nome do perfil).
   name            String?
+  /// Nome salvo na agenda do celular.
+  phoneName       String?
+  /// Nome do perfil no WhatsApp (pushName).
+  pushName        String?
+  remoteJid       String?
   notes           String    @default("")
   /// open | pending | resolved
   status          String    @default("open")

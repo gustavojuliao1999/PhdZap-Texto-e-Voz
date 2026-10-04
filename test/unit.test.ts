@@ -9,6 +9,7 @@ import { createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 import { isWithinHours } from "../src/attendance.js";
 import { redact } from "../src/audit.js";
+import { hiddenMatcher, hiddenRemotes, normalizeHiddenList } from "../src/hidden.js";
 import { recordCall } from "../src/audio/recorder.js";
 import { parseOutgoing } from "../src/http/messages-api.js";
 import { assertPublicUrl, isPrivateIp } from "../src/net/safe-fetch.js";
@@ -164,5 +165,23 @@ describe("webhook", () => {
     const json = JSON.parse(body);
     assert.equal(json.event, "ping");
     assert.equal(json.line.id, "L1");
+  });
+});
+
+describe("contatos ocultos", () => {
+  it("compara com e sem o 9º dígito e ignora a formatação", () => {
+    const hidden = hiddenMatcher(normalizeHiddenList("+55 (81) 9 9999-0000\n5511988887777"));
+    assert.ok(hidden("5581999990000"));
+    assert.ok(hidden("558199990000"));
+    assert.ok(hidden("551188887777"));
+    assert.ok(!hidden("5581999990001"));
+    assert.ok(!hidden(undefined));
+  });
+  it("lista: só números válidos, sem repetir o mesmo número", () => {
+    assert.deepEqual(normalizeHiddenList(["5581999990000", "558199990000", "123", ""]), ["558199990000"]);
+  });
+  it("variantes para filtrar no banco", () => {
+    assert.deepEqual(hiddenRemotes(["5581999990000"]).sort(), ["558199990000", "5581999990000"].sort());
+    assert.deepEqual(hiddenRemotes(["14155550000"]), ["14155550000"]);
   });
 });

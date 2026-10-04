@@ -77,7 +77,9 @@ export const docPage = (name: string, origin: string): string | null => {
   header nav { display: flex; gap: 4px; }
   header nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
   header nav a.active, header nav a:hover { color: var(--text); background: var(--panel-2); }
-  header .base { margin-left: auto; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .dl { margin-left: auto; color: var(--text); text-decoration: none; font-weight: 600; font-size: 13px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 8px; white-space: nowrap; }
+  header .dl:hover { background: var(--panel-2); }
+  header .base { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   header .base code { color: var(--text); }
   .wrap { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
   aside { position: sticky; top: 53px; align-self: start; max-height: calc(100vh - 53px); overflow-y: auto; padding: 24px 12px 40px 24px; border-right: 1px solid var(--line); }
@@ -109,7 +111,8 @@ export const docPage = (name: string, origin: string): string | null => {
     aside { display: none; }
     main { padding: 20px 16px 60px; }
     header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
-    header .base { margin-left: 0; width: 100%; }
+    header .dl { margin-left: auto; }
+    header .base { width: 100%; }
   }
 </style>
 </head>
@@ -117,6 +120,7 @@ export const docPage = (name: string, origin: string): string | null => {
 <header>
   <b>📞 Documentação</b>
   <nav>${nav}</nav>
+  <a class="dl" href="/docs/postman.json" download title="Coleção com todas as rotas, para importar no Postman">⬇ Postman</a>
   <span class="base">URL base: <code>${esc(origin)}</code></span>
 </header>
 <div class="wrap">

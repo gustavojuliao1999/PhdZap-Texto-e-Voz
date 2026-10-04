@@ -175,6 +175,9 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
   const quickReplies = new Map();
   /** chave da conversa -> ligações com o contato (para a linha do tempo). */
   const callsOf = new Map();
+  /** Contatos da agenda que batem com a pesquisa (de todos os números). */
+  let contactHits = [];
+  let searchTimer = null, searchSeq = 0;
 
   root.innerHTML = `
   <div class="wa">
@@ -188,7 +191,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
         <input name="num" inputmode="tel" placeholder="Número com DDI e DDD (ex.: 5581999999999)" autocomplete="off">
         <button type="submit">Abrir</button>
       </form>
-      <div class="wa-search"><input type="search" placeholder="Pesquisar conversa"></div>
+      <div class="wa-search"><input type="search" placeholder="Pesquisar conversa ou contato (nome ou número)"></div>
       <div class="wa-linebar" hidden><select class="wa-linesel" title="Número"></select></div>
       <div class="wa-filters">
         <button data-f="open" class="on">Abertas</button>
@@ -228,6 +231,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
             <div class="wa-info-av"></div>
             <label>Nome na equipe<input class="wa-f-name" maxlength="80" placeholder="Nome do perfil no WhatsApp"></label>
             <div class="wa-info-sub"></div>
+            <button class="wa-hide" data-a="hide-contact" hidden>Ocultar este contato</button>
             <label>Notas internas (o contato não vê)<textarea class="wa-f-notes" rows="5" placeholder="Ex.: cliente desde 2021, prefere contato à tarde"></textarea></label>
             <h5>Ligações</h5>
             <div class="wa-info-calls"></div>
@@ -316,6 +320,9 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
       ? (nameOf(c.key).toLowerCase().includes(f) || c.remote.includes(f.replace(/\D/g, "") || "§"))
       : byTab(c)));
     for (const b of root.querySelectorAll(".wa-filters button")) b.classList.toggle("on", !f && b.dataset.f === listFilter);
+    // Pesquisa: contatos da agenda sem conversa na lista (como no WhatsApp Web).
+    const hits = f ? contactHits.filter((h) => !shown.some((c) => c.key === h.key) && (!lineFilter || h.lineId === lineFilter)) : [];
+    if (!shown.length && hits.length) { list.innerHTML = `<div class="wa-sect">Contatos</div>${hits.map(hitHtml).join("")}`; return; }
     if (!shown.length) {
       list.innerHTML = `<div class="wa-list-empty">${chats.length ? (f ? "Nenhuma conversa encontrada." : "Nenhuma conversa aqui.") :
         "Nenhuma mensagem ainda.<br>As mensagens recebidas por este número aparecem aqui.<br>Para começar, toque no <b>+</b>."}</div>`;
@@ -335,7 +342,34 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
             ${c.assignedName ? `<span class="wa-who" title="Responsável">${esc(c.assignedName.split(" ")[0])}</span>` : ""}
             ${c.unread ? `<span class="wa-badge">${c.unread}</span>` : ""}</div>
         </div></div>`;
-    }).join("");
+    }).join("") + (hits.length ? `<div class="wa-sect">Contatos</div>${hits.map(hitHtml).join("")}` : "");
+    if (hits.length) list.insertAdjacentHTML("afterbegin", `<div class="wa-sect">Conversas</div>`);
+  };
+
+  /** Contato da agenda na pesquisa: nome, número e (com vários números) por qual número. */
+  const hitHtml = (h) => `<div class="wa-item" data-key="${esc(h.key)}" data-hit="1">
+      <div class="wa-av">${esc(initials(h.name))}${noPhoto.has(h.key) ? "" : `<img alt="" loading="lazy" data-key="${esc(h.key)}" src="${photoSrc(h.key, h.remoteJid)}">`}</div>
+      <div class="wa-item-main">
+        <div class="wa-item-top"><span class="wa-name">${esc(h.name || (h.remote.includes("@") ? "Contato" : fmtPhone(h.remote)))}</span>
+          ${multi() ? `<span class="wa-line" title="Número da empresa">${esc(lineName(h.lineId))}</span>` : ""}</div>
+        <div class="wa-item-bot"><span class="wa-prev">${esc([h.remote.includes("@") ? "" : fmtPhone(h.remote), h.pushName && h.pushName !== h.name ? `~${h.pushName}` : ""].filter(Boolean).join(" · "))}</span></div>
+      </div></div>`;
+
+  /** Busca na agenda de cada número (com atraso, enquanto digita). */
+  const searchContacts = () => {
+    clearTimeout(searchTimer);
+    const q = filter.trim();
+    if (q.length < 2) { contactHits = []; return; }
+    const seq = ++searchSeq;
+    searchTimer = setTimeout(async () => {
+      const found = await Promise.all(linesList().filter((l) => !lineFilter || l.id === lineFilter).map((l) =>
+        vapi("GET", `/contacts?q=${encodeURIComponent(q)}&limit=30`, undefined, l.id)
+          .then((list) => list.map((h) => ({ ...h, lineId: l.id, key: keyOf(l.id, h.remote) })))
+          .catch(() => [])));
+      if (seq !== searchSeq) return;
+      contactHits = found.flat();
+      renderList();
+    }, 250);
   };
 
   const touchChat = (m) => {
@@ -454,6 +488,12 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
     const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
     const reacts = reactionsOf(c.list);
     let html = c.hasMore && c.list.length ? `<div class="wa-more">${c.loading ? "Carregando…" : "Role para cima para ver mais"}</div>` : "";
+    // Fim do que está no gateway: dá para pedir as mensagens mais antigas ao celular.
+    if (!c.hasMore && c.loaded && c.list.some((m) => !m.pending)) {
+      html = `<div class="wa-more">${c.fetching ? "Buscando mensagens antigas no celular…"
+        : c.phoneDone ? "O celular não enviou mensagens mais antigas."
+        : `<button class="wa-older" data-a="older-phone">Buscar mensagens mais antigas no celular</button>`}</div>`;
+    }
     let lastDay = "", lastDir = "", lastTs = 0, lastWho = "";
     // Mensagens + ligações com o contato, em ordem de tempo.
     const oldest = c.hasMore ? c.list[0]?.timestamp ?? "" : "";
@@ -527,7 +567,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
     if (c) {
       const profile = c.profileName;
       Object.assign(c, { status: ct.status, assignedUserId: ct.assignedUserId, assignedName: ct.assignedName, notes: ct.notes });
-      c.name = ct.name || profile || c.name;
+      c.name = ct.name || c.phoneName || profile || c.name;
       c.customName = ct.name ?? null;
     }
     renderList();
@@ -555,8 +595,10 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
     const name = el(".wa-f-name"), notes = el(".wa-f-notes");
     if (document.activeElement !== name) { name.value = c.customName ?? ""; name.placeholder = c.profileName || "Nome"; }
     if (document.activeElement !== notes) notes.value = c.notes ?? "";
-    el(".wa-info-sub").textContent = (isGroup(active) ? "Grupo do WhatsApp" : `${fmtPhone(remoteOf(active))}${c.profileName ? ` · perfil: ${c.profileName}` : ""}`)
+    el(".wa-info-sub").textContent = (isGroup(active) ? "Grupo do WhatsApp" : [fmtPhone(remoteOf(active)),
+      c.phoneName ? `agenda: ${c.phoneName}` : "", c.profileName ? `perfil: ${c.profileName}` : ""].filter(Boolean).join(" · "))
       + (multi() ? ` · número: ${lineName(c.lineId)}` : "");
+    el(".wa-hide").hidden = !who()?.isAdmin || isGroup(active) || remoteOf(active).includes("@");
     const calls = callsOf.get(active) ?? [];
     el(".wa-info-calls").innerHTML = calls.length
       ? calls.slice().reverse().slice(0, 20).map((call) => `<div class="wa-info-call">${fmtDay(call.startedAt)} ${fmtTime(call.startedAt)} — ${callHtml(call)}</div>`).join("")
@@ -593,6 +635,43 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
       c.loading = false;
     }
     if (active === key) renderMessages(true);
+  };
+
+  /** Pede ao celular as mensagens anteriores da conversa; elas chegam pelo evento `history`. */
+  const fetchOlderFromPhone = async () => {
+    const key = active;
+    const c = convs.get(key);
+    if (!c || c.fetching) return;
+    c.fetching = true;
+    renderMessages(true);
+    try {
+      await vapi("POST", `/chats/${encodeURIComponent(remoteOf(key))}/sync`, {}, lineOf(key));
+    } catch (err) {
+      c.fetching = false;
+      toast(err.message);
+      if (active === key) renderMessages(true);
+      return;
+    }
+    clearTimeout(c.fetchTimer);
+    // Sem resposta (ou nada mais antigo no celular): para de esperar.
+    c.fetchTimer = setTimeout(() => {
+      if (!c.fetching) return;
+      c.fetching = false;
+      c.phoneDone = true;
+      if (active === key) renderMessages(true);
+    }, 30_000);
+  };
+
+  /** Recarrega a lista de conversas de um número (depois de chegar histórico), sem perder as novas. */
+  const reloadTimers = new Map();
+  const scheduleReload = (line) => {
+    clearTimeout(reloadTimers.get(line));
+    reloadTimers.set(line, setTimeout(async () => {
+      const keep = chats.filter((c) => c.lineId === line && !c.last);
+      await loadLine(line).catch(() => {});
+      for (const c of keep) if (!chatOf(c.key)) chats.push(c);
+      renderList();
+    }, 1500));
   };
 
   const openChat = async (key) => {
@@ -856,9 +935,12 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
 
   list.onclick = (ev) => {
     const item = ev.target.closest(".wa-item");
-    if (item) openChat(item.dataset.key);
+    if (!item) return;
+    const hit = item.dataset.hit && contactHits.find((h) => h.key === item.dataset.key);
+    if (hit) ensureChat(hit.lineId, hit.remote, { remoteJid: hit.remoteJid, name: hit.name, phoneName: hit.phoneName, profileName: hit.pushName });
+    openChat(item.dataset.key);
   };
-  el(".wa-search input").oninput = (ev) => { filter = ev.target.value; renderList(); };
+  el(".wa-search input").oninput = (ev) => { filter = ev.target.value; renderList(); searchContacts(); };
   el(".wa-filters").onclick = (ev) => {
     const b = ev.target.closest("[data-f]");
     if (!b) return;
@@ -1001,6 +1083,8 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
       case "take": patchContact(active, { assignedUserId: "me", ...(chatOf(active)?.status === "resolved" ? { status: "open" } : {}) }); break;
       case "info": el(".wa-info").hidden = !el(".wa-info").hidden; renderInfo(); break;
       case "info-close": el(".wa-info").hidden = true; break;
+      case "older-phone": fetchOlderFromPhone(); break;
+      case "hide-contact": hideContact(); break;
       case "reply": {
         replyTo = findMsg(active, t.closest(".wa-row").dataset.id);
         if (!replyTo) break;
@@ -1012,6 +1096,27 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
       case "react": showReactPicker(t.closest(".wa-row")); break;
     }
   });
+
+  /** Admin: oculta o contato neste número (some do painel, da API e do webhook). */
+  const hideContact = async () => {
+    const key = active;
+    if (!key || !confirm(`Ocultar ${nameOf(key)} neste número?\n\nAs mensagens e ligações continuam gravadas, mas somem do painel, do atendimento, da API e do webhook. Para mostrar de novo, tire o número da lista em Configurações › Contatos ocultos.`)) return;
+    try {
+      const res = await fetch(`/admin/api/lines/${encodeURIComponent(lineOf(key))}/hidden-contacts`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ remote: remoteOf(key) }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Erro ${res.status}`);
+    } catch (err) { return toast(err.message); }
+    chats = chats.filter((c) => c.key !== key);
+    convs.delete(key);
+    el(".wa-info").hidden = true;
+    wa.classList.remove("show-chat");
+    el(".wa-chat").hidden = true;
+    el(".wa-placeholder").hidden = false;
+    active = null;
+    renderList();
+    toast("Contato ocultado neste número", true);
+  };
 
   // Toque (sem mouse): tocar na bolha mostra as ações.
   if (matchMedia("(hover: none)").matches) {
@@ -1061,7 +1166,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
     agents.set(line, ag);
     quickReplies.set(line, qr);
     chats = chats.filter((c) => c.lineId !== line).concat(list.map((c) => ({
-      ...c, lineId: line, key: keyOf(line, c.remote), customName: c.name !== c.profileName ? c.name : null,
+      ...c, lineId: line, key: keyOf(line, c.remote), customName: c.teamName ?? null,
     })));
     chats.sort((a, b) => (b.last?.timestamp ?? "").localeCompare(a.last?.timestamp ?? ""));
   };
@@ -1093,6 +1198,8 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
       syncOnline();
       renderLineBar();
     },
+    /** Recarrega as conversas de um número (ex.: depois de mudar os contatos ocultos). */
+    reloadLine: (line) => scheduleReload(line),
     /** Recarrega as respostas rápidas (depois de editar nas configurações). */
     reloadQuickReplies: async () => {
       for (const l of linesList()) quickReplies.set(l.id, await vapi("GET", "/quick-replies", undefined, l.id).catch(() => quickReplies.get(l.id) ?? []));
@@ -1100,6 +1207,20 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
     onEvent: (e) => {
       if (e.lineId && !linesList().some((l) => l.id === e.lineId)) return;
       if (e.type === "contact") { applyContact({ ...e.contact, lineId: e.lineId }); return; }
+      if (e.type === "history") {
+        // Mensagens antigas chegaram do celular: as conversas abertas buscam a página nova.
+        for (const remote of e.remotes ?? []) {
+          const key = keyOf(e.lineId, remote);
+          const c = convs.get(key);
+          if (!c?.loaded) continue;
+          c.fetching = false; c.phoneDone = false; c.hasMore = true;
+          clearTimeout(c.fetchTimer);
+          if (key === active) void loadOlder();
+        }
+        scheduleReload(e.lineId);
+        return;
+      }
+      if (e.type === "sync") return;
       if ((e.type === "ended" || e.type === "call-update") && e.call) {
         // Ligação terminou (ou gravação/transcrição ficou pronta): entra na linha do tempo da conversa.
         const key = keyOf(e.lineId, e.call.remote);

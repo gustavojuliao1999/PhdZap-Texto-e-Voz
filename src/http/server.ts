@@ -23,6 +23,8 @@ import { assertPublicUrl } from "../net/safe-fetch.js";
 import { transcriptionConfigured } from "../transcribe.js";
 import { computeMetrics } from "../metrics.js";
 import { docPage } from "./docs.js";
+import { postmanCollection } from "./postman.js";
+import { hiddenMatcher } from "../hidden.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
 
@@ -169,6 +171,8 @@ const lineView = (line: LineRuntime, p: Principal) => {
       transcribeCalls: c.transcribeCalls,
       transcribeVoiceNotes: c.transcribeVoiceNotes,
     } : {}),
+    // Contatos ocultos: só administradores sabem quais são.
+    ...(isAdmin(p) ? { hiddenContacts: c.hiddenContacts } : {}),
   };
 };
 
@@ -349,6 +353,13 @@ export const startServer = (deps: ServerDeps): http.Server => {
     if (method === "GET" && p.startsWith("/docs/")) {
       const origin = process.env.PUBLIC_URL?.trim().replace(/\/+$/, "")
         || `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host}`;
+      if (p === "/docs/postman.json") {
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "content-disposition": 'attachment; filename="whatsapp-voice-gateway.postman_collection.json"',
+        });
+        return void res.end(JSON.stringify(postmanCollection(origin), null, 2));
+      }
       const body = docPage(p.slice("/docs/".length), origin);
       if (!body) throw new HttpError(404, "Página não encontrada");
       return html(res, body);
@@ -439,6 +450,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
           requirePerm(me, id, "settings");
           const before = { ...lines.get(id)!.config };
           const body = await readJson(req);
+          if (body.hiddenContacts !== undefined) requireAdmin(me);
           const after = (await lines.update(id, body)).config;
           const changed = Object.fromEntries(Object.keys(after)
             .filter((k) => JSON.stringify((before as any)[k]) !== JSON.stringify((after as any)[k]))
@@ -452,6 +464,29 @@ export const startServer = (deps: ServerDeps): http.Server => {
           await lines.remove(id);
           audit(me, req, "line.delete", { lineId: id, target: name });
           return sendJson(res, 200, { ok: true });
+        }
+        if (action === "sync-history" && parts.length === 3) {
+          requirePerm(me, id, "settings");
+          if (method === "GET") return sendJson(res, 200, lines.syncStatus(id));
+          if (method === "POST") {
+            const st = lines.syncAll(id);
+            audit(me, req, "line.sync-history", { lineId: id, target: lines.get(id)!.config.name });
+            return sendJson(res, 202, st);
+          }
+        }
+        if (method === "POST" && action === "hidden-contacts" && parts.length === 3) {
+          // Oculta (ou mostra de novo) um contato a partir do painel do chat.
+          requireAdmin(me);
+          const body = await readJson(req);
+          const remote = String(body.remote ?? "").replace(/\D/g, "");
+          if (remote.length < 8) throw new HttpError(400, "Campo 'remote' deve ser um número com DDI e DDD");
+          const line = lines.get(id)!;
+          const list = body.hidden === false
+            ? line.config.hiddenContacts.filter((h) => !hiddenMatcher([h])(remote))
+            : [...line.config.hiddenContacts, remote];
+          const after = (await lines.update(id, { hiddenContacts: list })).config;
+          audit(me, req, body.hidden === false ? "line.contact-unhide" : "line.contact-hide", { lineId: id, target: after.name, details: { remote } });
+          return sendJson(res, 200, { hiddenContacts: after.hiddenContacts });
         }
         if (method === "POST" && action === "rotate-token") {
           requirePerm(me, id, "integrations");
@@ -494,7 +529,8 @@ export const startServer = (deps: ServerDeps): http.Server => {
         const visible = isAdmin(me) ? null : lines.lines.filter((l) => can(me, l.config.id, "view")).map((l) => l.config.id);
         const lineId = url.searchParams.get("line");
         if (lineId && !can(me, lineId, "view")) throw new HttpError(403, "Sem permissão para este telefone");
-        return sendJson(res, 200, await store.recentCalls(lineId ? [lineId] : visible, 200));
+        const calls = await store.recentCalls(lineId ? [lineId] : visible, 400);
+        return sendJson(res, 200, calls.filter((c) => !lines.isHidden(c.lineId, c.remote)).slice(0, 200));
       }
       if (parts[0] === "quick-replies") {
         const lineIdOf = async (id: string): Promise<string | null> => {
@@ -599,13 +635,18 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (parts[0] === "calls" && parts.length === 1) {
         if (method === "GET") {
           const contact = url.searchParams.get("contact");
-          if (contact) return sendJson(res, 200, { current: line.current, history: await store.callsWith(lineId, contact, 100) });
-          return sendJson(res, 200, { current: line.current, history: await store.recentCalls([lineId], 100) });
+          if (contact) {
+            lines.assertVisible(lineId, contact);
+            return sendJson(res, 200, { current: line.current, history: await store.callsWith(lineId, contact, 100) });
+          }
+          const history = (await store.recentCalls([lineId], 200)).filter((c) => !line.isHidden(c.remote)).slice(0, 100);
+          return sendJson(res, 200, { current: line.current, history });
         }
         if (method === "POST") {
           requirePerm(principal, lineId, "dial");
           const { to, handler, clientId, agent } = await readJson(req);
           if (typeof to !== "string" && typeof to !== "number") throw new HttpError(400, "Campo 'to' obrigatório");
+          if (line.isHidden(String(to))) throw new HttpError(403, "Este contato está oculto neste telefone");
           const call = await line.dial(String(to), {
             handler: handler ?? (clientId ? "browser" : undefined),
             clientId: clientId ? String(clientId) : undefined,
@@ -619,7 +660,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (parts[0] === "calls" && parts.length === 3 && parts[2] === "recording" && method === "GET") {
         requirePerm(principal, lineId, "view");
         const call = await store.getCall(lineId, decodeURIComponent(parts[1]));
-        if (!call?.recordingFile) throw new HttpError(404, "Ligação sem gravação");
+        if (!call?.recordingFile || line.isHidden(call.remote)) throw new HttpError(404, "Ligação sem gravação");
         return sendFile(req, res, lines.lineFile(lineId, call.recordingFile), "audio/ogg", `ligacao-${call.remote}-${call.startedAt.toISOString().slice(0, 16).replace(/[:T]/g, "-")}.ogg`);
       }
 
@@ -673,10 +714,20 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (parts[0] === "chats" || parts[0] === "contacts") {
         requirePerm(principal, lineId, "messages");
         if (parts[0] === "chats" && parts.length === 1 && method === "GET") {
-          const chats = await store.listChats(lineId);
+          const chats = await store.listChats(lineId, lines.hiddenRemotes(lineId));
           return sendJson(res, 200, chats.map((c) => ({ ...c, last: { ...c.last, mediaUrl: webhooks.mediaUrl(c.last) } })));
         }
+        // Agenda: pesquisa por nome ou número (?q=), como no WhatsApp Web.
+        if (parts[0] === "contacts" && parts.length === 1 && method === "GET") {
+          const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
+          return sendJson(res, 200, await store.searchContacts(lineId, url.searchParams.get("q") ?? "", { limit, exclude: lines.hiddenRemotes(lineId) }));
+        }
         const remote = decodeURIComponent(parts[1] ?? "");
+        lines.assertVisible(lineId, remote);
+        if (parts[0] === "chats" && parts.length === 3 && parts[2] === "sync" && method === "POST") {
+          await lines.requestOlder(lineId, remote);
+          return sendJson(res, 202, { requested: true });
+        }
         if (parts[0] === "chats" && parts.length === 3 && parts[2] === "read" && method === "POST") {
           await lines.markChatRead(lineId, remote);
           return sendJson(res, 200, { ok: true });
@@ -711,8 +762,10 @@ export const startServer = (deps: ServerDeps): http.Server => {
           // Número (só dígitos) ou JID (grupos e contatos só com LID).
           const rawContact = url.searchParams.get("contact")?.trim() ?? "";
           const contact = (rawContact.includes("@") ? rawContact : rawContact.replace(/\D/g, "")) || undefined;
+          if (contact) lines.assertVisible(lineId, contact);
           const list = await store.listMessages(lineId, {
             remote: contact,
+            exclude: lines.hiddenRemotes(lineId),
             before: beforeDate,
             limit: Number(url.searchParams.get("limit") ?? 50) || 50,
           });
@@ -809,8 +862,9 @@ const attachWebSockets = (
 
   lines.on("event", (e: LineEvent) => {
     // Mensagens só para quem tem a permissão; elas não mudam o estado da linha.
-    if (e.type === "message" || e.type === "message-status" || e.type === "message-update" || e.type === "chat-read" || e.type === "contact") {
-      const msg = e.type === "chat-read" || e.type === "contact" ? e : { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
+    if (e.type === "message" || e.type === "message-status" || e.type === "message-update" || e.type === "chat-read" || e.type === "contact"
+      || e.type === "history" || e.type === "sync") {
+      const msg = "message" in e ? { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } } : e;
       for (const [ws, p] of lineClients.get(e.lineId) ?? []) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       for (const [ws, p] of adminClients) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       return;

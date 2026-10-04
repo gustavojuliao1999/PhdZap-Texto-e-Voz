@@ -4,7 +4,7 @@ import path from "node:path";
 import { Prisma, type Call, type Contact, type Line, type Message, type PrismaClient, type QuickReply } from "@prisma/client";
 import type { CallView, MessageView } from "./line-manager.js";
 import { log } from "./log.js";
-import type { HandlerName, LineConfig, MessageRecord, MessageStatus } from "./worker/protocol.js";
+import type { ContactRecord, HandlerName, LineConfig, MessageRecord, MessageStatus } from "./worker/protocol.js";
 
 export const newLineToken = (): string => `wvl_${randomBytes(24).toString("base64url")}`;
 export const newAdminKey = (): string => `wva_${randomBytes(24).toString("base64url")}`;
@@ -43,6 +43,7 @@ const toConfig = (l: Line): LineConfig => ({
   recordCalls: l.recordCalls,
   transcribeCalls: l.transcribeCalls,
   transcribeVoiceNotes: l.transcribeVoiceNotes,
+  hiddenContacts: l.hiddenContacts,
 });
 
 const fromConfig = (c: LineConfig) => ({
@@ -67,6 +68,7 @@ const fromConfig = (c: LineConfig) => ({
   recordCalls: c.recordCalls,
   transcribeCalls: c.transcribeCalls,
   transcribeVoiceNotes: c.transcribeVoiceNotes,
+  hiddenContacts: c.hiddenContacts,
 });
 
 const toView = (c: Call): CallView => ({
@@ -135,11 +137,27 @@ export const toContactView = (c: Contact | null, remote: string): ContactView =>
   updatedAt: c?.updatedAt.toISOString(),
 });
 
+/** Contato da agenda (pesquisa por nome e número). */
+export type ContactSearchView = {
+  remote: string;
+  remoteJid?: string;
+  /** Nome a mostrar: o da equipe, o da agenda do celular ou o do perfil. */
+  name?: string;
+  phoneName?: string;
+  pushName?: string;
+  /** Já há mensagens com o contato. */
+  hasChat: boolean;
+};
+
 /** Conversa (contato) de uma linha. */
 export type ChatView = ContactView & {
   remoteJid: string;
   /** Nome do perfil no WhatsApp (o `name` pode ter sido definido pela equipe). */
   profileName?: string;
+  /** Nome salvo na agenda do celular. */
+  phoneName?: string;
+  /** Nome definido pela equipe (o `name` cai para a agenda e o perfil quando vazio). */
+  teamName?: string;
   isGroup: boolean;
   unread: number;
   last: MessageView;
@@ -198,6 +216,7 @@ export class Store {
     recordCalls: false,
     transcribeCalls: false,
     transcribeVoiceNotes: false,
+    hiddenContacts: [],
   });
 
   insertLine = async (c: LineConfig): Promise<void> => {
@@ -288,12 +307,12 @@ export class Store {
   /** Mensagens mais recentes primeiro. `remote` filtra por contato; `before` pagina. */
   listMessages = async (
     lineId: string,
-    opts: { remote?: string; before?: Date; limit?: number } = {},
+    opts: { remote?: string; before?: Date; limit?: number; exclude?: string[] } = {},
   ): Promise<MessageView[]> => {
     const rows = await this.db.message.findMany({
       where: {
         lineId,
-        ...(opts.remote ? { remote: opts.remote } : {}),
+        ...(opts.remote ? { remote: opts.remote } : opts.exclude?.length ? { remote: { notIn: opts.exclude } } : {}),
         ...(opts.before ? { timestamp: { lt: opts.before } } : {}),
       },
       orderBy: { timestamp: "desc" },
@@ -335,6 +354,124 @@ export class Store {
     else if (!c.name) await this.db.contact.update({ where: { lineId_remote: { lineId, remote } }, data: { name } });
   };
 
+  /**
+   * Grava contatos da agenda / perfil. Só sobrescreve o que veio (o nome da equipe nunca muda).
+   * Em lote, numa transação por bloco.
+   */
+  saveContacts = async (lineId: string, list: ContactRecord[]): Promise<void> => {
+    for (let i = 0; i < list.length; i += 200) {
+      await this.db.$transaction(list.slice(i, i + 200).map((c) => {
+        const data = {
+          remoteJid: c.remoteJid,
+          ...(c.phoneName ? { phoneName: c.phoneName.slice(0, 200) } : {}),
+          ...(c.pushName ? { pushName: c.pushName.slice(0, 200) } : {}),
+        };
+        return this.db.contact.upsert({
+          where: { lineId_remote: { lineId, remote: c.remote } },
+          create: { lineId, remote: c.remote, ...data },
+          update: data,
+        });
+      }));
+    }
+  };
+
+  /**
+   * Pesquisa na agenda por nome (equipe, agenda do celular ou perfil) ou número, como no
+   * WhatsApp Web. Contatos com conversa vêm primeiro.
+   */
+  searchContacts = async (lineId: string, q: string, opts: { limit?: number; exclude?: string[] } = {}): Promise<ContactSearchView[]> => {
+    const term = q.trim();
+    const digits = term.replace(/\D/g, "");
+    const or: Prisma.ContactWhereInput[] = [];
+    if (term) {
+      for (const field of ["name", "phoneName", "pushName"] as const) or.push({ [field]: { contains: term, mode: "insensitive" } });
+    }
+    if (digits.length >= 2) or.push({ remote: { contains: digits } });
+    const rows = await this.db.contact.findMany({
+      where: {
+        lineId,
+        ...(term ? { OR: or.length ? or : [{ remote: "§" }] } : {}),
+        ...(opts.exclude?.length ? { remote: { notIn: opts.exclude } } : {}),
+        NOT: { remote: { endsWith: "@g.us" } },
+      },
+      take: 2000,
+    });
+    const withChat = new Set((await this.db.message.groupBy({
+      by: ["remote"], where: { lineId, remote: { in: rows.map((r) => r.remote) } },
+    })).map((g) => g.remote));
+    const display = (c: Contact) => c.name ?? c.phoneName ?? c.pushName ?? undefined;
+    return rows
+      .map((c) => ({
+        remote: c.remote,
+        remoteJid: c.remoteJid ?? undefined,
+        name: display(c),
+        phoneName: c.phoneName ?? undefined,
+        pushName: c.pushName ?? undefined,
+        hasChat: withChat.has(c.remote),
+      }))
+      .sort((a, b) => Number(b.hasChat) - Number(a.hasChat)
+        || Number(!!b.name) - Number(!!a.name)
+        || (a.name ?? a.remote).localeCompare(b.name ?? b.remote, "pt-BR"))
+      .slice(0, Math.min(Math.max(opts.limit ?? 50, 1), 500));
+  };
+
+  /**
+   * Grava o histórico enviado pelo celular, sem repetir o que já existe. As recebidas entram
+   * como lidas (não viram "não lidas" no painel). Retorna quantas entraram, por contato.
+   */
+  insertHistory = async (lineId: string, items: { message: MessageRecord; raw: string }[]): Promise<Map<string, number>> => {
+    const added = new Map<string, number>();
+    for (let i = 0; i < items.length; i += 500) {
+      const chunk = items.slice(i, i + 500);
+      const known = new Set((await this.db.message.findMany({
+        where: { lineId, waId: { in: chunk.map((x) => x.message.id) } }, select: { waId: true },
+      })).map((r) => r.waId));
+      const fresh = chunk.filter((x) => !known.has(x.message.id));
+      if (!fresh.length) continue;
+      await this.db.message.createMany({
+        skipDuplicates: true,
+        data: fresh.map(({ message: rec, raw }) => {
+          const extra = { media: rec.media, location: rec.location, contact: rec.contact };
+          return {
+            lineId,
+            waId: rec.id,
+            direction: rec.direction,
+            remote: rec.remote,
+            remoteJid: rec.remoteJid,
+            pushName: rec.pushName,
+            type: rec.type,
+            text: rec.text,
+            extra: Object.values(extra).some(Boolean) ? (JSON.parse(JSON.stringify(extra)) as Prisma.InputJsonObject) : undefined,
+            replyTo: rec.replyTo,
+            status: rec.direction === "incoming" && rec.status === "delivered" ? "read" : rec.status,
+            timestamp: new Date(rec.timestamp),
+            raw,
+            participant: rec.participant,
+            participantName: rec.participantName,
+          };
+        }),
+      });
+      for (const x of fresh) added.set(x.message.remote, (added.get(x.message.remote) ?? 0) + 1);
+    }
+    return added;
+  };
+
+  /** Mensagem mais antiga da conversa que serve de referência para pedir o histórico ao celular. */
+  oldestMessage = async (lineId: string, remote: string): Promise<{ waId: string; raw: string; timestamp: Date } | null> => {
+    const row = await this.db.message.findFirst({
+      where: { lineId, remote, raw: { not: null } },
+      orderBy: { timestamp: "asc" },
+      select: { waId: true, raw: true, timestamp: true },
+    });
+    return row?.raw ? { waId: row.waId, raw: row.raw, timestamp: row.timestamp } : null;
+  };
+
+  /** Contatos com conversa (para a sincronização completa), do mais recente para o mais antigo. */
+  chatRemotes = async (lineId: string): Promise<string[]> =>
+    (await this.db.$queryRaw<{ remote: string }[]>`
+      SELECT "remote" FROM "Message" WHERE "lineId" = ${lineId}
+      GROUP BY "remote" ORDER BY max("timestamp") DESC`).map((r) => r.remote);
+
   /** Ligações com um contato (mais recentes primeiro). */
   callsWith = async (lineId: string, remote: string, limit = 50): Promise<CallView[]> =>
     (await this.db.call.findMany({ where: { lineId, remote }, orderBy: { startedAt: "desc" }, take: limit })).map(toView);
@@ -356,7 +493,8 @@ export class Store {
     });
 
   /** Conversas: última mensagem, nome do contato e não lidas. Mais recentes primeiro. */
-  listChats = async (lineId: string): Promise<ChatView[]> => {
+  /** Conversas da linha; `exclude` = contatos ocultos (todas as formas gravadas do número). */
+  listChats = async (lineId: string, exclude: string[] = []): Promise<ChatView[]> => {
     const [last, names, unread] = await Promise.all([
       this.db.$queryRaw<Message[]>`
         SELECT DISTINCT ON ("remote") * FROM "Message"
@@ -375,14 +513,19 @@ export class Store {
     const nameOf = new Map(names.map((n) => [n.remote, n.pushName]));
     const unreadOf = new Map(unread.map((u) => [u.remote, u._count._all]));
     const contacts = new Map((await this.db.contact.findMany({ where: { lineId } })).map((c) => [c.remote, c]));
+    const hidden = new Set(exclude);
     return last
+      .filter((m) => !hidden.has(m.remote))
       .map((m) => {
         const c = contacts.get(m.remote) ?? null;
+        const profile = nameOf.get(m.remote) ?? c?.pushName ?? undefined;
         return {
           ...toContactView(c, m.remote),
           remoteJid: m.remoteJid,
-          name: c?.name ?? nameOf.get(m.remote),
-          profileName: nameOf.get(m.remote),
+          name: c?.name ?? c?.phoneName ?? profile,
+          profileName: profile,
+          phoneName: c?.phoneName ?? undefined,
+          teamName: c?.name ?? undefined,
           isGroup: m.remoteJid.endsWith("@g.us"),
           unread: unreadOf.get(m.remote) ?? 0,
           last: toMessageView(m),

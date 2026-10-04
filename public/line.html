@@ -366,6 +366,25 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
           <button class="ghost small" type="button" id="qrCancel" hidden>Cancelar</button>
         </form>
       </div>
+      <div class="card" id="syncCard" hidden>
+        <h4 style="margin-top:0">Histórico e agenda do celular</h4>
+        <div class="hint" style="margin-top:0">Busca no celular as mensagens antigas de cada conversa (de 50 em 50, até o início) e os nomes
+          salvos na agenda, que passam a aparecer nas conversas e na pesquisa. O celular precisa estar ligado e com internet; pode levar alguns minutos.</div>
+        <div class="row" style="margin-top:10px">
+          <button class="green small" type="button" id="syncBtn">Sincronizar tudo</button>
+          <span class="muted" id="syncInfo" style="font-size:13px"></span>
+        </div>
+        <div class="hint">Conversas que nunca passaram pelo gateway só chegam ao <b>vincular de novo</b> (Desconectar telefone e ler o QR):
+          o celular envia o histórico completo para um aparelho recém-vinculado.</div>
+      </div>
+      <div class="card" id="hiddenCard" hidden>
+        <h4 style="margin-top:0">Contatos ocultos <span class="muted" style="font-weight:400;font-size:13px">· só administradores veem esta lista</span></h4>
+        <div class="hint" style="margin-top:0">Mensagens e ligações destes números continuam gravadas, mas não aparecem no painel, no atendimento,
+          na API nem no webhook. O gateway não atende as ligações deles: tocam só no celular.</div>
+        <textarea id="fHidden" rows="4" placeholder="5581999999999&#10;5511988887777"></textarea>
+        <div class="hint">Um por linha, com DDI e DDD (com ou sem o 9º dígito). Também dá para ocultar pelo chat: Dados do contato › Ocultar este contato.</div>
+        <div class="row" style="margin-top:10px"><button class="green small" type="button" id="hiddenSave">Salvar lista</button></div>
+      </div>
       <div class="card" id="deliveriesCard" hidden>
         <div class="row" style="justify-content:space-between">
           <h4 style="margin:0">Entregas do webhook</h4>
@@ -426,7 +445,7 @@ const showTab = () => {
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
   document.body.classList.toggle("chat-mode", tab === "mensagens");
   if (tab === "mensagens" || has("messages")) chat.activate();
-  if (tab === "configuracoes" && has("settings")) { loadDeliveries(); loadQuickReplies(); }
+  if (tab === "configuracoes" && has("settings")) { loadDeliveries(); loadQuickReplies(); loadSync(); }
   document.querySelectorAll(".tabs a[data-tab]").forEach((a) => {
     a.hidden = !tabAllowed(a.dataset.tab);
     a.classList.toggle("active", a.dataset.tab === tab);
@@ -548,7 +567,32 @@ const fillForm = () => {
   $("fWebhookSecret").value = line.webhookSecret ?? "";
   document.querySelectorAll("#fWebhookEvents input").forEach((c) => { c.checked = (line.webhookEvents ?? []).includes(c.value); });
   syncBridgeFields();
+  fillHidden();
 };
+
+// ─── contatos ocultos (admin) e sincronização do histórico ───────────────
+const fillHidden = () => {
+  $("hiddenCard").hidden = !me.isAdmin;
+  if (me.isAdmin && document.activeElement !== $("fHidden")) $("fHidden").value = (line.hiddenContacts ?? []).join("\n");
+};
+$("hiddenSave").onclick = act(async () => {
+  line = await api("PATCH", `/lines/${lineId}`, { hiddenContacts: $("fHidden").value });
+  $("fHidden").value = (line.hiddenContacts ?? []).join("\n");
+  render();
+  chat.reloadLine(lineId);
+  toast("Lista de contatos ocultos salva", true);
+});
+const syncText = (st) => st.running
+  ? `Sincronizando… ${st.done} de ${st.chats || "?"} conversas · ${st.added} mensagens antigas · ${st.contacts} contatos`
+  : st.finishedAt
+    ? `${st.error ? `Parou: ${st.error}. ` : "Concluída. "}${st.added} mensagens antigas em ${st.done} conversa(s), ${st.contacts} contato(s) da agenda.`
+    : "";
+const renderSync = (st) => { $("syncInfo").textContent = syncText(st); $("syncBtn").disabled = !!st.running; };
+const loadSync = async () => {
+  $("syncCard").hidden = !has("settings");
+  if (has("settings")) renderSync(await api("GET", `/lines/${lineId}/sync-history`).catch(() => ({})));
+};
+$("syncBtn").onclick = act(async () => { renderSync(await api("POST", `/lines/${lineId}/sync-history`)); });
 const WEBHOOK_EVENTS = {
   "message.received": "Mensagem recebida", "message.sent": "Mensagem enviada", "message.status": "Status (entregue, lida)",
   "call.incoming": "Ligação chegando", "call.dialing": "Ligação iniciada", "call.answered": "Ligação atendida (atendente)",
@@ -908,10 +952,12 @@ connectAdminEvents((e) => {
     if (!line) { location.href = "/admin"; return; }
     render(); fillForm();
   } else if (e.type === "line-admin" && e.line.id === lineId) {
-    line = e.line; render();
+    line = e.line; render(); fillHidden();
   } else if (e.type === "line-removed" && e.lineId === lineId) {
     location.href = "/admin";
-  } else if (["message", "message-status", "message-update", "chat-read", "contact", "call-update"].includes(e.type) && e.lineId === lineId) {
+  } else if (e.type === "sync" && e.lineId === lineId) {
+    renderSync(e.sync);
+  } else if (["message", "message-status", "message-update", "chat-read", "contact", "call-update", "history"].includes(e.type) && e.lineId === lineId) {
     chat.onEvent(e);
     if (e.type === "call-update") {
       const h = history.find((c) => c.id === e.call.id);

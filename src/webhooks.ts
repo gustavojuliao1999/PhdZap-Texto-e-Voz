@@ -154,7 +154,8 @@ export class WebhookDispatcher {
         };
         break;
       case "busy": event = "call.busy"; data = { from: e.from }; break;
-      case "chat-read": return;
+      // Avisos do painel (histórico antigo e sincronização) não vão para o webhook.
+      case "chat-read": case "history": case "sync": return;
       case "line": {
         // "line" também sai quando a linha é reconfigurada; só interessa a troca de status.
         const prev = this.#lastStatus.get(e.lineId);

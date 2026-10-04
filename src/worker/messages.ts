@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { phoneNumberCandidates, type VoipClient } from "baileys-caller";
 import { log } from "../log.js";
-import type { MessageRecord, MessageStatus, MessageType, OutgoingContent } from "./protocol.js";
+import type { ContactRecord, MessageRecord, MessageStatus, MessageType, OutgoingContent } from "./protocol.js";
 
 /** Status do proto do WhatsApp (WebMessageInfo.Status) -> nosso. */
 const STATUS: MessageStatus[] = ["error", "pending", "sent", "delivered", "read", "played"];
@@ -21,6 +21,11 @@ const num = (v: unknown): number | undefined => (v == null ? undefined : Number(
 const isUserJid = (jid: string): boolean => /@(s\.whatsapp\.net|lid)$/.test(jid);
 const isGroupJid = (jid: string): boolean => jid.endsWith("@g.us");
 
+/** Mensagens do histórico por evento enviado ao processo principal (limita o tamanho do IPC). */
+const HISTORY_CHUNK = 250;
+/** Coleção do app state com a agenda do celular. */
+const CONTACTS_COLLECTION = "critical_unblock_low";
+
 /** Tipos do protocolMessage (proto ProtocolMessage.Type). */
 const REVOKE = 0;
 const MESSAGE_EDIT = 14;
@@ -33,8 +38,10 @@ const textOf = (c: any): string | undefined =>
  * Mensagens da linha pelo MESMO socket do Baileys usado nas chamadas
  * (o WhatsApp só aceita uma conexão por aparelho vinculado).
  *
- * Emite `message` (MessageRecord, raw), `status` ({ id, remoteJid, status }) e
- * `update` ({ id, remoteJid, text?, deleted? }) para mensagens editadas/apagadas.
+ * Emite `message` (MessageRecord, raw), `status` ({ id, remoteJid, status }),
+ * `update` ({ id, remoteJid, text?, deleted? }) para mensagens editadas/apagadas,
+ * `history` ({ messages, syncType, progress }) com o histórico enviado pelo celular e
+ * `contacts` (ContactRecord[]) com a agenda e os nomes de perfil.
  * Conversas individuais sempre; grupos só se `groups()` for verdadeiro; status e canais nunca.
  */
 export class MessageService extends EventEmitter {
@@ -70,6 +77,35 @@ export class MessageService extends EventEmitter {
           .catch((err) => log.warn(`mensagem ignorada: ${err?.message ?? err}`));
       }
     });
+
+    // Histórico: ao vincular (INITIAL_BOOTSTRAP, RECENT, FULL) e sob pedido (ON_DEMAND).
+    sock.ev.on("messaging-history.set", ({ messages, contacts, syncType, progress }: any) => {
+      const type = String(this.#b.proto?.HistorySync?.HistorySyncType?.[syncType] ?? syncType);
+      this.#queue = this.#queue
+        .then(async () => {
+          if (contacts?.length) await this.#emitContacts(contacts.map((c: any) => ({ ...c, phoneName: c.name })));
+          const out: { message: MessageRecord; raw: string }[] = [];
+          for (const m of messages ?? []) {
+            if (this.#b.normalizeMessageContent(m?.message)?.protocolMessage) continue;
+            const rec = await this.#toRecord(m).catch(() => null);
+            if (rec) out.push({ message: rec, raw: this.#serialize(m) });
+          }
+          log.info(`histórico ${type}: ${out.length} mensagem(ns), ${contacts?.length ?? 0} contato(s)${progress != null ? ` (${progress}%)` : ""}`);
+          for (let i = 0; i < out.length || i === 0; i += HISTORY_CHUNK) {
+            this.emit("history", { messages: out.slice(i, i + HISTORY_CHUNK), syncType: type, progress: num(progress) });
+          }
+        })
+        .catch((err) => log.warn(`histórico ignorado: ${err?.message ?? err}`));
+    });
+
+    // Agenda do celular (name) e nomes de perfil (notify).
+    const onContacts = (list: any[]) => {
+      this.#queue = this.#queue
+        .then(() => this.#emitContacts(list.map((c) => ({ ...c, phoneName: c.name, pushName: c.notify || c.verifiedName }))))
+        .catch((err) => log.warn(`contatos ignorados: ${err?.message ?? err}`));
+    };
+    sock.ev.on("contacts.upsert", onContacts);
+    sock.ev.on("contacts.update", onContacts);
 
     sock.ev.on("messages.update", (updates: any[]) => {
       for (const { key, update } of updates) {
@@ -133,7 +169,41 @@ export class MessageService extends EventEmitter {
     }
   };
 
+  /** Pede ao celular mensagens anteriores a `raw`; chegam depois no evento `history` (ON_DEMAND). */
+  fetchHistory = async (raw: string, count: number): Promise<void> => {
+    const m = this.#parse(raw);
+    const ts = num(m.messageTimestamp);
+    if (!m?.key?.id || !ts) throw new Error("Mensagem de referência inválida");
+    await this.#requireSock().fetchMessageHistory(Math.min(Math.max(count, 1), 50), m.key, ts * 1000);
+  };
+
+  /** Baixa a agenda do celular do zero: o WhatsApp manda de novo todos os contatos salvos. */
+  syncContacts = async (): Promise<void> => {
+    const sock = this.#requireSock();
+    await sock.authState.keys.set({ "app-state-sync-version": { [CONTACTS_COLLECTION]: null } });
+    await sock.resyncAppState([CONTACTS_COLLECTION], true);
+  };
+
   // ─── interno ────────────────────────────────────────────────────────────
+
+  /** Contatos do Baileys ({ id, lid?, phoneNumber?, phoneName?, pushName? }) -> evento `contacts`. */
+  #emitContacts = async (list: any[]): Promise<void> => {
+    const out = new Map<string, ContactRecord>();
+    for (const c of list) {
+      const jid: string = c?.id ?? "";
+      if (!isUserJid(jid)) continue;
+      const remote = await this.#phoneOf(jid, c.phoneNumber);
+      const prev = out.get(remote);
+      out.set(remote, {
+        remote,
+        remoteJid: jid,
+        phoneName: c.phoneName || prev?.phoneName || undefined,
+        pushName: c.pushName || prev?.pushName || undefined,
+      });
+    }
+    const contacts = [...out.values()].filter((c) => c.phoneName || c.pushName);
+    if (contacts.length) this.emit("contacts", contacts);
+  };
 
   #requireSock = (): any => {
     const sock = this.client.socket;

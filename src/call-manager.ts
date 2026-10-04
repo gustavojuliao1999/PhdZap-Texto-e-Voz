@@ -11,6 +11,8 @@ export type CallPolicy = {
   inboundMode: "manual" | "auto" | "reject";
   inboundAnswerDelayMs: number;
   maxCallDurationMs: number;
+  /** Contato oculto: o gateway não atende nem recusa (só o celular toca). */
+  isHidden?: (remote: string) => boolean;
 };
 
 export type GatewayEvent =
@@ -82,6 +84,10 @@ export class CallManager extends EventEmitter {
     const session = this.#track(new CallSession(call, remote, info.from, info.pushName), this.defaultHandler);
     log.info(`chamada recebida de ${remote}${info.pushName ? ` (${info.pushName})` : ""} id=${call.callId}`);
     this.#emit({ type: "incoming", call: session.record });
+    if (this.cfg.isHidden?.(remote)) {
+      log.info(`[${call.callId}] contato oculto: fica só no celular`);
+      return;
+    }
 
     switch (this.cfg.inboundMode) {
       case "reject":

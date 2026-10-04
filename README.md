@@ -216,8 +216,9 @@ aparelho vinculado). Só conversas individuais: grupos, status e canais são ign
 **No painel**, a aba **Mensagens** de cada telefone é um chat no estilo do WhatsApp: conversas com
 não lidas, fotos, vídeos, figurinhas, documentos, localização, contatos, áudio de voz (ouvir e
 gravar pelo microfone), respostas, reações e confirmação de leitura (✓✓ azul). Ela aparece para quem
-tem a permissão **Mensagens**. Só aparecem as mensagens recebidas ou enviadas depois desta versão:
-o histórico antigo do celular não é importado.
+tem a permissão **Mensagens**. A pesquisa acha conversas e contatos da agenda do celular por nome
+ou número, como no WhatsApp Web. Mensagens antigas: no topo de cada conversa, **Buscar mensagens mais
+antigas no celular**; para todas, Configurações › **Sincronizar tudo**.
 
 **Webhook** (Configurações da linha › Webhook): o gateway faz um `POST` JSON para a sua URL a
 cada evento:
@@ -271,6 +272,15 @@ grandes. Uma pessoa em vários grupos soma os acessos.
   viram o nome do contato e o seu).
 - **Horário de atendimento** com resposta automática fora do horário (uma vez a cada 12 h por contato).
 - **Grupos** (opcional por telefone), mensagens editadas e apagadas, reações, figurinhas e áudios.
+- **Histórico e agenda do celular:** o histórico que o celular envia fica gravado. Em cada
+  conversa, **Buscar mensagens mais antigas no celular**; em Configurações, **Sincronizar tudo**
+  (todas as conversas até o início, mais a agenda). Num telefone vinculado agora, o celular já envia
+  o histórico completo. Conversas que nunca passaram pelo gateway só chegam vinculando de novo.
+- **Contatos:** nomes da agenda do celular e do perfil, com pesquisa por nome e número
+  (`GET /api/v1/contacts?q=`).
+- **Contatos ocultos** (administradores): números cujas mensagens e ligações ficam gravadas, mas não
+  aparecem no painel, no atendimento, na API nem no webhook; as ligações deles tocam só no celular.
+  Configure em Configurações › Contatos ocultos, ou no chat: Dados do contato › Ocultar este contato.
 - **Gravação das ligações** (opcional por telefone; avise os contatos, pela LGPD) e **transcrição**
   de ligações e áudios de voz por uma API compatível com OpenAI (`TRANSCRIBE_API_KEY`;
   `TRANSCRIBE_API_URL` aceita Groq ou um whisper local).
@@ -302,6 +312,20 @@ docker compose --profile https up -d
 ./scripts/backup.sh                      # agora
 0 3 * * * cd /caminho && ./scripts/backup.sh >> backups/backup.log 2>&1   # crontab, todo dia às 3h
 ./scripts/restore.sh 20261004-030000     # restaurar (para o app, substitui banco e sessões)
+```
+
+**Atualização automática** quando o `baileys-caller` muda. O `scripts/deploy.sh` compila o
+baileys-caller se o `src/` mudou, reconstrói a imagem e recria o app. Só reinicia o app se algo mudou
+de fato e volta para a imagem anterior se a nova não ficar saudável. O log fica em `logs/deploy.log`,
+e as falhas também vão para `ALERT_WEBHOOK_URL`. Para disparar a cada commit, pull, rebase ou troca de
+branch no baileys-caller, instale o hook:
+
+```bash
+for h in post-commit post-merge post-checkout post-rewrite; do
+  ln -sf "$PWD/scripts/hooks/baileys-caller" "../baileys-caller/.git/hooks/$h"
+done
+./scripts/deploy.sh                    # ou rode à mão a qualquer momento
+AUTO_DEPLOY=0 git commit ...           # no baileys-caller: commit sem atualizar o container
 ```
 
 **Operação:**
@@ -351,6 +375,7 @@ que são muito verbosos.
   (evento `busy`). Para atender várias ao mesmo tempo, crie mais linhas.
 - Ligações: só voz 1:1, sem vídeo e sem chamadas em grupo (é uma limitação do WhatsApp num aparelho
   vinculado).
-- Mensagens: só as recebidas ou enviadas depois de instalar; o histórico antigo do celular não é importado.
+- Mensagens antigas: vêm do celular, que precisa estar com internet. Conversas que nunca passaram pelo
+  gateway só chegam vinculando o telefone de novo (o celular envia o histórico a um vínculo novo).
 - Use um número dedicado por linha. Ligações feitas pelo celular do mesmo número disputam a conta.
 - `data/` (ou o volume `appdata`) contém as sessões do WhatsApp. Trate como credencial, junto com o banco.

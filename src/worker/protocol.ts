@@ -34,6 +34,8 @@ export type LineConfig = CallPolicy & {
   recordCalls: boolean;
   transcribeCalls: boolean;
   transcribeVoiceNotes: boolean;
+  /** Números ocultos (só dígitos): gravados, mas fora do painel, da API e do webhook. */
+  hiddenContacts: string[];
 };
 
 export type BusinessHours = Partial<Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", [string, string][]>>;
@@ -67,6 +69,17 @@ export type MessageRecord = {
   timestamp: string;
 };
 
+/** Contato vindo da agenda do celular, do perfil ou do histórico. */
+export type ContactRecord = {
+  /** Número (dígitos) quando conhecido, senão o JID. */
+  remote: string;
+  remoteJid: string;
+  /** Nome salvo na agenda do celular. */
+  phoneName?: string;
+  /** Nome do perfil no WhatsApp. */
+  pushName?: string;
+};
+
 /** Conteúdo a enviar. */
 export type OutgoingContent =
   | { type: "text"; text: string }
@@ -95,7 +108,13 @@ export type GatewayEvent =
   /** Gravação pronta. `file` é relativo à pasta da linha (ex.: recordings/ABC.ogg). */
   | { type: "recording"; callId: string; file: string; seconds: number }
   /** Mensagem editada (novo texto) ou apagada para todos. */
-  | { type: "message-update"; id: string; remoteJid: string; text?: string; deleted?: boolean };
+  | { type: "message-update"; id: string; remoteJid: string; text?: string; deleted?: boolean }
+  /**
+   * Histórico enviado pelo celular (ao vincular ou sob pedido). `syncType`: INITIAL_BOOTSTRAP,
+   * RECENT, FULL, ON_DEMAND… `progress` em % quando o celular informa.
+   */
+  | { type: "history"; messages: { message: MessageRecord; raw: string }[]; syncType: string; progress?: number }
+  | { type: "contacts"; contacts: ContactRecord[] };
 
 export type WorkerCommand =
   | { cmd: "dial"; to: string; handler?: string }
@@ -110,6 +129,10 @@ export type WorkerCommand =
   | { cmd: "download-media"; raw: string }
   | { cmd: "mark-read"; raws: string[] }
   | { cmd: "profile-picture"; jid: string }
+  /** Pede ao celular até `count` mensagens anteriores a `raw` (a mais antiga conhecida). */
+  | { cmd: "fetch-history"; raw: string; count: number }
+  /** Baixa de novo a agenda do celular (gera eventos `contacts`). */
+  | { cmd: "sync-contacts" }
   | { cmd: "logout" };
 
 /** Principal -> worker */
