@@ -11,7 +11,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:studio": "prisma studio",
     "bridge:example": "tsx examples/echo-bridge-server.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
