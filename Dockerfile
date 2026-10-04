@@ -25,6 +25,7 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY public ./public
 COPY examples ./examples
+COPY docs ./docs
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /data && chown node:node /data
 

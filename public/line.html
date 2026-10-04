@@ -217,6 +217,18 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
   <section id="tab-api" hidden>
     <div class="stack">
       <div class="card">
+        <h4>Documentação completa</h4>
+        <div class="hint" style="margin-top:0">
+          Referência de todas as rotas, eventos, objetos e erros, com exemplos. Página pública: pode enviar o link para quem vai integrar
+          (ela não mostra o token).
+        </div>
+        <div class="row" style="margin-top:12px">
+          <a href="/docs/api" target="_blank" rel="noopener"><button class="green small" type="button">📘 Documentação da API</button></a>
+          <a href="/docs/webhook" target="_blank" rel="noopener"><button class="ghost small" type="button">🔔 Documentação do webhook</button></a>
+          <button class="ghost small" type="button" id="copyDocsBtn">Copiar link</button>
+        </div>
+      </div>
+      <div class="card">
         <h4>Autenticação</h4>
         <div class="hint" style="margin-top:0">
           Envie <code>Authorization: Bearer &lt;token da linha&gt;</code> (ou <code>?token=</code> em WebSockets).
@@ -284,7 +296,8 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         <h4>Webhook (mensagens e ligações)</h4>
         <label for="fWebhookUrl" style="margin-top:0">URL que recebe os eventos (POST JSON)</label>
         <input id="fWebhookUrl" placeholder="https://meusistema.com.br/whatsapp/webhook">
-        <div class="hint">Vazio = desligado. Se a sua URL não responder 2xx, o envio é repetido após 5 s, 30 s e 2 min.</div>
+        <div class="hint">Vazio = desligado. Se a sua URL não responder 2xx, o envio é repetido após 5 s, 30 s e 2 min.
+          Eventos, formato e como validar a assinatura: <a href="/docs/webhook" target="_blank" rel="noopener">documentação do webhook</a>.</div>
         <label for="fWebhookSecret">Segredo da assinatura</label>
         <div class="token-row">
           <input id="fWebhookSecret" placeholder="usado no HMAC-SHA256 do cabeçalho X-Webhook-Signature">
@@ -591,6 +604,10 @@ $("configForm").addEventListener("submit", act(async (e) => {
   render(); fillForm();
   toast("Configurações salvas", true);
 }));
+$("copyDocsBtn").onclick = async () => {
+  await navigator.clipboard.writeText(`${location.origin}/docs/api`);
+  toast("Link da documentação copiado", true);
+};
 $("testWebhookBtn").onclick = act(async () => {
   if ($("fWebhookUrl").value.trim() !== (line.webhookUrl ?? "")) return toast("Salve a URL do webhook antes de testar");
   const r = await api("POST", `/lines/${lineId}/webhook-test`);

@@ -16,6 +16,7 @@
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "baileys-caller": "file:../baileys-caller",
+    "marked": "^16.4.2",
     "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
     "tsx": "^4.23.15",

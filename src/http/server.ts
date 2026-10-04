@@ -16,6 +16,7 @@ import {
 import { log } from "../log.js";
 import { newLineToken, type Store } from "../store.js";
 import type { WebhookDispatcher } from "../webhooks.js";
+import { docPage } from "./docs.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
 
@@ -275,6 +276,15 @@ export const startServer = (deps: ServerDeps): http.Server => {
     if (method === "GET" && p === "/sdk/demo") {
       if (!lines.byToken(url.searchParams.get("token") ?? "")) throw new HttpError(403, "Token da linha inválido");
       return html(res, page("sdk-demo.html"));
+    }
+    // ── documentação pública (sem login) ──
+    if (method === "GET" && (p === "/docs" || p === "/docs/")) return redirect(res, "/docs/api");
+    if (method === "GET" && p.startsWith("/docs/")) {
+      const origin = process.env.PUBLIC_URL?.trim().replace(/\/+$/, "")
+        || `${req.headers["x-forwarded-proto"] ?? "http"}://${req.headers.host}`;
+      const body = docPage(p.slice("/docs/".length), origin);
+      if (!body) throw new HttpError(404, "Página não encontrada");
+      return html(res, body);
     }
     if (method === "GET" && p === "/health") {
       await db.$queryRaw`SELECT 1`;
