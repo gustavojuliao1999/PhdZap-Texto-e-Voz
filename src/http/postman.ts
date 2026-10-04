@@ -167,7 +167,7 @@ const bearer = (variable: string) => ({ type: "bearer", bearer: [{ key: "token",
 /** Coleção pronta para importar no Postman (ou Insomnia, Bruno, Hoppscotch). */
 export const postmanCollection = (origin: string) => ({
   info: {
-    name: "WhatsApp Voice Gateway",
+    name: "PhdZap",
     description:
       `Rotas da API do gateway. Preencha as variáveis da coleção: \`lineToken\` (painel › telefone › Iframes), ` +
       `\`adminKey\` (ADMIN_API_KEY do .env) e \`numero\` (com DDI e DDD). Documentação: ${DOCS}`,

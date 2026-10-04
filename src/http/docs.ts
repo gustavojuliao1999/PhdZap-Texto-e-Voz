@@ -65,7 +65,7 @@ export const docPage = (name: string, origin: string): string | null => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${page.title} · Documentação · WhatsApp Voice Gateway</title>
+<title>${page.title} · Documentação · PhdZap</title>
 <link rel="icon" href="/static/icon.svg">
 <style>
   :root { --bg: #0f1418; --panel: #182128; --panel-2: #1f2a33; --line: #26333c; --text: #e6edf1; --muted: #8a9ba6; --green: #25d366; --blue: #3b9eff; }

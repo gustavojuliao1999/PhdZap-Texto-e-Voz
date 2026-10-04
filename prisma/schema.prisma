@@ -1,4 +1,4 @@
-// Banco do WhatsApp Voice Gateway.
+// Banco do PhdZap.
 // As sessões do WhatsApp (chaves do Baileys) continuam em arquivos em DATA_DIR.
 
 generator client {

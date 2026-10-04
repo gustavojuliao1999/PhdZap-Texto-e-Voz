@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Gateway de chamadas de voz do WhatsApp (entrada/saída) sobre o baileys-caller, com ponte de mídia em tempo real para agentes de IA.",
+  "description": "PhdZap: central de atendimento por WhatsApp (mensagens e ligações de voz) sobre o baileys-caller, com ponte de mídia em tempo real para agentes de IA.",
   "scripts": {
     "start": "tsx --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",

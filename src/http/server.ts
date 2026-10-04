@@ -356,7 +356,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (p === "/docs/postman.json") {
         res.writeHead(200, {
           "content-type": "application/json; charset=utf-8",
-          "content-disposition": 'attachment; filename="whatsapp-voice-gateway.postman_collection.json"',
+          "content-disposition": 'attachment; filename="phdzap.postman_collection.json"',
         });
         return void res.end(JSON.stringify(postmanCollection(origin), null, 2));
       }

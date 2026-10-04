@@ -1,4 +1,4 @@
-# WhatsApp Voice Gateway + PostgreSQL
+# PhdZap + PostgreSQL
 #
 #   cp .env.example .env    # defina ADMIN_API_KEY e POSTGRES_PASSWORD
 #   docker compose up -d --build

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Telefone · WhatsApp Voice Gateway</title>
+<title>Telefone · PhdZap</title>
 <link rel="stylesheet" href="/static/ui.css">
 <link rel="stylesheet" href="/static/admin.css">
 <link rel="stylesheet" href="/static/chat.css">
@@ -67,7 +67,7 @@
 </head>
 <body>
 <header>
-  <h1>📞 WhatsApp Voice Gateway</h1>
+  <h1>📞 PhdZap</h1>
   <span class="badge" id="live">conectando…</span>
   <nav id="nav"></nav>
 </header>
@@ -495,7 +495,7 @@ const loadFrames = (force = false) => {
 
 const render = () => {
   if (!line) return;
-  document.title = `${line.name} · WhatsApp Voice Gateway`;
+  document.title = `${line.name} · PhdZap`;
   $("lineName").textContent = line.name;
   $("linePhone").textContent = line.phone ? fmtPhone(line.phone) : "sem telefone conectado";
   $("lineStatus").textContent = STATUS[line.status] ?? line.status;

@@ -1,6 +1,6 @@
-# whatsapp-voice-gateway
+# PhdZap
 
-Central de ligações de voz do WhatsApp sobre o [`baileys-caller`](../baileys-caller):
+Central de atendimento por WhatsApp (mensagens e ligações de voz) sobre o [`baileys-caller`](../baileys-caller):
 
 - **Painel** com login de usuários, **grupos e permissões por telefone**: várias **linhas**
   (telefones), cada uma com QR de pareamento, **token próprio** e configurações.

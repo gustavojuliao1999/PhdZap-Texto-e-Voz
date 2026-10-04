@@ -1,5 +1,5 @@
 /*!
- * WhatsApp Voice Gateway — SDK JavaScript (sem iframe).
+ * PhdZap — SDK JavaScript (sem iframe).
  *
  *   <script src="https://SEU_GATEWAY/sdk.js"></script>
  *   <script>

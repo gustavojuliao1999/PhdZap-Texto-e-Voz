@@ -1,4 +1,4 @@
-# Webhook do WhatsApp Voice Gateway
+# Webhook do PhdZap
 
 O webhook avisa o seu sistema, em tempo real, sobre **mensagens** (recebidas, enviadas, entregues,
 lidas), **ligações** (chegando, atendida, encerrada…) e o **status do telefone**. É configurado por

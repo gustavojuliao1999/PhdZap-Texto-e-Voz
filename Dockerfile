@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# WhatsApp Voice Gateway. O baileys-caller vem do contexto extra "baileys-caller"
+# PhdZap. O baileys-caller vem do contexto extra "baileys-caller"
 # (docker compose: build.additional_contexts → ../baileys-caller).
 
 FROM node:22-bookworm-slim

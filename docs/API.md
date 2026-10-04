@@ -1,4 +1,4 @@
-# API do WhatsApp Voice Gateway
+# API do PhdZap
 
 Referência completa da API: ligações, mensagens, eventos em tempo real, áudio, gestão de
 telefones/usuários e a ponte de IA. O webhook tem documento próprio: [WEBHOOK.md](WEBHOOK.md).
@@ -90,7 +90,7 @@ cabeçalhos `authorization, content-type, x-line-id`).
 ### Testar no Postman
 
 Baixe a coleção com todas as rotas, já apontando para este gateway:
-[**whatsapp-voice-gateway.postman_collection.json**](http://localhost:3000/docs/postman.json).
+[**phdzap.postman_collection.json**](http://localhost:3000/docs/postman.json).
 
 1. No Postman: **Import** › arraste o arquivo.
 2. Na coleção, aba **Variables**, preencha `lineToken` (token da linha), `adminKey` (`ADMIN_API_KEY`)
