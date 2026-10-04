@@ -67,7 +67,7 @@
           c.connect(this.ctx.destination);
           this.master = c;
         }
-        if (this.ctx.state === "suspended") this.ctx.resume();
+        if (this.ctx.state === "suspended") { var p = this.ctx.resume(); if (p && p.catch) p.catch(function () {}); }
       } catch (e) {}
     },
     note: function (dest, freq, at) {
@@ -215,6 +215,19 @@
    * @param {boolean} [opts.ringtone=true]  tocar o toque ao receber
    * @param {boolean} [opts.ringback=true]  tocar o "chamando" ao ligar
    */
+  /**
+   * Libera o som no primeiro clique/toque/tecla em qualquer lugar da página
+   * (os navegadores só tocam áudio depois de uma interação), sem botão.
+   */
+  var autoUnlockBound = false;
+  function bindAutoUnlock() {
+    if (autoUnlockBound || typeof document === "undefined") return;
+    autoUnlockBound = true;
+    var tryUnlock = function () { if (!sound.ctx || sound.ctx.state !== "running") sound.unlock(); };
+    ["pointerdown", "keydown", "touchend"].forEach(function (ev) { document.addEventListener(ev, tryUnlock, true); });
+    global.addEventListener("focus", tryUnlock);
+  }
+
   function Phone(opts) {
     Emitter.call(this);
     if (!opts || !opts.token) throw new Error("WhatsAppVoice.connect: informe { token }");
@@ -233,6 +246,7 @@
     this._audio = new CallAudio(this.server, this.token, this.clientId, this.agent, function (kind, v) {
       self.levels[kind] = v; self.emit("levels", self.levels);
     }, function () { self._sync(); });
+    if (this.useRingtone) bindAutoUnlock();
     this._connect(1000);
   }
   Phone.prototype = Object.create(Emitter.prototype);

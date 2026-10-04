@@ -31,13 +31,13 @@
     <span class="name" id="lineName">…</span>
     <span class="badge connecting" id="lineStatus">conectando…</span>
   </div>
-  <div class="soundbar" id="soundbar">🔔 Ative o som para ouvir o toque <button id="soundBtn">Ativar</button></div>
+  <div class="soundbar" id="soundbar">🔔 Clique em qualquer lugar para ativar o toque <button id="soundBtn">Ativar</button></div>
   <div class="stage" id="stage"></div>
   <div class="toast" id="toast"></div>
 
 <script type="module">
 import {
-  api, connectEvents, notifyParent, ringtone, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc,
+  api, connectEvents, notifyParent, ringtone, autoUnlockSound, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc,
 } from "/static/voice.js";
 
 const $ = (id) => document.getElementById(id);
@@ -150,10 +150,10 @@ const answer = async () => {
 
 setInterval(() => { const t = $("timer"); if (t && call?.status === "connected") t.textContent = fmtDuration(call.connectedAt); }, 1000);
 
-// Desbloqueio de som (política de autoplay dos navegadores).
-const unlock = () => { ringtone.unlock(); setTimeout(render, 50); };
-$("soundBtn").onclick = unlock;
-document.addEventListener("pointerdown", unlock, { once: true });
+// Desbloqueio de som (política de autoplay dos navegadores): libera no primeiro clique/tecla,
+// aqui ou na página de fora (iframe com allow="autoplay").
+autoUnlockSound(() => render());
+$("soundBtn").onclick = () => ringtone.unlock();
 
 connectEvents((e) => {
   switch (e.type) {

@@ -175,6 +175,29 @@ Gestão (chave de acesso, `Authorization: Bearer <chave>`): `GET/POST /admin/api
 `PATCH/DELETE /admin/api/lines/:id`, `POST /admin/api/lines/:id/{logout,restart,rotate-token}`,
 `GET /admin/api/calls`, `POST /admin/api/lines/:id/webhook-test`.
 
+## Som do toque (autoplay)
+
+Os navegadores só tocam som depois de uma interação com a página. Por isso o receptor libera o
+toque no **primeiro clique ou tecla em qualquer lugar**: dentro dele ou na página que o incorpora,
+desde que o iframe tenha `allow="autoplay"`. O SDK faz o mesmo sozinho. Ao abrir o painel, basta um
+clique em qualquer coisa.
+
+Para não precisar nem desse clique:
+
+- **Alertas do sistema:** na página do telefone, clique em **🔔 Ativar alertas** uma vez. Com a aba
+  em segundo plano, ligações e mensagens novas aparecem como notificação do sistema, com o som do
+  sistema e sem precisar de clique.
+- **Liberar o site no navegador** dos computadores dos atendentes:
+  - **Chrome:** política `AutoplayAllowlist`. No Linux, crie
+    `/etc/opt/chrome/policies/managed/autoplay.json` com
+    `{"AutoplayAllowlist": ["https://SEU_GATEWAY"]}` (no Windows, use GPO ou o registro). Confira em
+    `chrome://policy`.
+  - **Edge:** `edge://settings/content/mediaAutoplay` › Permitir › adicione o site.
+  - **Firefox:** cadeado na barra de endereço › Permissões › Reprodução automática ›
+    Permitir áudio e vídeo.
+  - Num computador só de atendimento, também dá para abrir o Chrome com
+    `--autoplay-policy=no-user-gesture-required`.
+
 ## Mensagens e webhook
 
 As mensagens usam o mesmo socket do WhatsApp das ligações (o WhatsApp aceita uma conexão por

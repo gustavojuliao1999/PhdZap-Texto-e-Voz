@@ -67,6 +67,7 @@
       <div class="phone muted" id="linePhone"></div>
     </div>
     <span class="badge" id="lineStatus"></span>
+    <button class="ghost small" id="notifyBtn" hidden title="Avisos do sistema com som para ligações e mensagens, mesmo com a aba em segundo plano">🔔 Ativar alertas</button>
   </div>
 
   <nav class="tabs">
@@ -318,7 +319,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
 <script type="module">
 import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
 import { $, STATUS, api, act, toast, connectAdminEvents, callLabel, callResult, loadMe, renderNav } from "/static/admin.js";
-import { mountChat } from "/static/chat.js";
+import { mountChat, preview } from "/static/chat.js";
 
 const lineId = location.pathname.split("/").pop();
 let line = null;
@@ -625,11 +626,59 @@ $("deleteBtn").onclick = act(async () => {
   await api("DELETE", `/lines/${lineId}`);
   location.href = "/admin";
 });
+// ─── som e alertas ───────────────────────────────────────────────────────
+// Um clique ou tecla em qualquer lugar do painel libera o som dos iframes (allow="autoplay").
+const unlockFrames = () => {
+  for (const f of document.querySelectorAll("iframe")) f.contentWindow?.postMessage({ type: "wvg-unlock-audio" }, location.origin);
+};
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, unlockFrames, true);
+
+// Notificações do sistema: tocam o som do sistema sem precisar de clique na página.
+const canNotify = "Notification" in window;
+const syncNotifyBtn = () => { $("notifyBtn").hidden = !canNotify || Notification.permission !== "default"; };
+syncNotifyBtn();
+$("notifyBtn").onclick = async () => {
+  const p = await Notification.requestPermission();
+  syncNotifyBtn();
+  toast(p === "granted" ? "Alertas ativados" : "Alertas bloqueados no navegador", p === "granted");
+};
+const callAlerts = new Map();
+const alertUser = (title, body, { tag, onClick, sticky = false } = {}) => {
+  if (!canNotify || Notification.permission !== "granted") return null;
+  const n = new Notification(title, { body, tag, renotify: true, requireInteraction: sticky, icon: "/static/icon.svg" });
+  n.onclick = () => { window.focus(); n.close(); onClick?.(); };
+  return n;
+};
+const away = () => document.hidden || !document.hasFocus();
+const onAlertEvent = (e) => {
+  if (e.lineId !== lineId) return;
+  if (e.type === "incoming" && has("receive") && away()) {
+    const who = e.call.pushName || fmtPhone(e.call.remote);
+    callAlerts.set(e.call.id, alertUser(`📞 ${who} está ligando`, line?.name ?? "", {
+      tag: `call-${e.call.id}`, sticky: true, onClick: () => { location.hash = "#telefone"; },
+    }));
+  }
+  if (["answered", "connected", "ended"].includes(e.type)) {
+    callAlerts.get(e.call.id)?.close();
+    callAlerts.delete(e.call.id);
+  }
+  if (e.type === "message" && has("messages")) {
+    const m = e.message;
+    const looking = !away() && location.hash === "#mensagens" && chat.active === m.remote;
+    if (m.direction === "incoming" && m.type !== "reaction" && !looking) {
+      alertUser(`💬 ${m.pushName || chat.nameOf(m.remote)}`, preview(m), {
+        tag: `msg-${m.remote}`, onClick: () => { location.hash = "#mensagens"; chat.open(m.remote); },
+      });
+    }
+  }
+};
+
 // ─── dados ao vivo ───────────────────────────────────────────────────────
 me = await loadMe().catch((e) => { toast(e.message); return me; });
 renderNav(me, "lines");
 
 connectAdminEvents((e) => {
+  onAlertEvent(e);
   if (e.type === "lines") {
     line = e.lines.find((l) => l.id === lineId);
     if (!line) { location.href = "/admin"; return; }

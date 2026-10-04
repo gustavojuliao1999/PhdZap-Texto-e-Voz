@@ -67,7 +67,7 @@ const formatText = (text) => {
 };
 const onlyEmoji = (t) => !!t && t.length <= 12 && /^(\p{Extended_Pictographic}|\p{Emoji_Component}|‍|️|\s)+$/u.test(t) && !/\d/.test(t);
 
-const preview = (m) => {
+export const preview = (m) => {
   if (!m) return "";
   switch (m.type) {
     case "text": return m.text ?? "";
@@ -787,6 +787,12 @@ export const mountChat = (root, { lineId, canCall = () => false, onCall = () => 
   // ─── API pública ──────────────────────────────────────────────────────
 
   return {
+    /** Abre a conversa com um contato. */
+    open: (remote) => openChat(remote),
+    /** Contato da conversa aberta (null se nenhuma). */
+    get active() { return active; },
+    /** Nome a mostrar para um contato. */
+    nameOf: (remote) => nameOf(remote),
     /** Carrega as conversas na primeira vez que a aba abre. */
     activate: async () => {
       if (active) markRead();

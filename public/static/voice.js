@@ -198,11 +198,12 @@ const peak = (f32) => {
 
 /** AudioContext compartilhado pelos sons (navegadores só liberam após uma interação). */
 const sound = {
-  ctx: null, master: null,
+  ctx: null, master: null, listeners: new Set(),
   unlock() {
     try {
       if (!this.ctx) {
         this.ctx = new AudioContext();
+        this.ctx.onstatechange = () => this.listeners.forEach((fn) => fn(this.unlocked));
         // Compressor: deixa o toque alto sem distorcer.
         const comp = this.ctx.createDynamicsCompressor();
         comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 6;
@@ -210,7 +211,7 @@ const sound = {
         comp.connect(this.ctx.destination);
         this.master = comp;
       }
-      if (this.ctx.state === "suspended") this.ctx.resume();
+      if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
     } catch {}
   },
   get unlocked() { return this.ctx?.state === "running"; },
@@ -282,6 +283,26 @@ export const ringtone = looper((bus, t) => {
 }, 2400);
 ringtone.unlock = () => sound.unlock();
 Object.defineProperty(ringtone, "unlocked", { get: () => sound.unlocked });
+
+/**
+ * Libera o som assim que o navegador deixar, sem exigir um botão:
+ *   - qualquer clique, toque ou tecla na página;
+ *   - aviso da página que incorporou (postMessage "wvg-unlock-audio"): com
+ *     allow="autoplay" no iframe, um clique na página de fora já basta;
+ *   - ao voltar para a aba e quando uma ligação começa a tocar.
+ * `onChange(liberado)` é chamado quando o estado muda.
+ */
+export const autoUnlockSound = (onChange = () => {}) => {
+  sound.listeners.add(onChange);
+  if (autoUnlockSound.bound) return;
+  autoUnlockSound.bound = true;
+  const tryUnlock = () => { if (!sound.unlocked) sound.unlock(); };
+  for (const ev of ["pointerdown", "keydown", "touchend"]) document.addEventListener(ev, tryUnlock, true);
+  window.addEventListener("focus", tryUnlock);
+  window.addEventListener("message", (e) => { if (e.data?.type === "wvg-unlock-audio") tryUnlock(); });
+  // Se o navegador já permite (site com engajamento ou liberado nas configurações), libera agora.
+  tryUnlock();
+};
 
 /** "Chamando" (ringback) no padrão brasileiro: 425 Hz, 1 s ligado / 4 s desligado. */
 export const ringback = looper((bus, t) => sound.tone(bus, 425, t, 1.0, 0.22), 5000);
