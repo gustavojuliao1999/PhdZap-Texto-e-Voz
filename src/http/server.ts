@@ -20,7 +20,7 @@ import { newLineToken, type Store } from "../store.js";
 import type { WebhookDispatcher } from "../webhooks.js";
 import type { Attendance } from "../attendance.js";
 import { assertPublicUrl } from "../net/safe-fetch.js";
-import { transcriptionConfigured } from "../transcribe.js";
+import { transcribeMode, transcribeModel, transcriptionConfigured } from "../transcribe.js";
 import { computeMetrics } from "../metrics.js";
 import { docPage } from "./docs.js";
 import { postmanCollection } from "./postman.js";
@@ -425,6 +425,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
           id: me.kind === "user" ? me.id : undefined,
           name: displayName(me),
           transcriptionAvailable: transcriptionConfigured(),
+          transcription: { mode: transcribeMode(), model: transcriptionConfigured() ? transcribeModel() : undefined },
           username: me.kind === "user" ? me.username : undefined,
           isAdmin: isAdmin(me),
           attendantOnly: isAttendantOnly(me),

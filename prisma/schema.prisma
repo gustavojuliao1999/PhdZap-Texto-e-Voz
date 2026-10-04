@@ -121,6 +121,8 @@ model Call {
   recordingFile    String?
   recordingSeconds Int?
   transcript       String?
+  /// Transcrição por lado: [{ at: segundos, who: "contact" | "agent", text }].
+  transcriptSegments Json?
   line        Line?     @relation(fields: [lineId], references: [id], onDelete: SetNull)
 
   @@index([lineId, startedAt(sort: Desc)])

@@ -260,6 +260,12 @@ body.chat-mode main { max-width: 1500px; padding-bottom: 16px; }
 .wa-call .wa-audio { width: 280px; padding: 6px 0 0; }
 .wa-call-tr { margin-top: 6px; color: var(--wa-sub); font-size: 12.5px; white-space: pre-wrap; }
 .wa-call-tr summary { cursor: pointer; color: var(--wa-blue); }
+.tr-turn { margin: 4px 0; white-space: normal; line-height: 1.4; }
+.tr-turn b { margin-right: 4px; }
+.tr-turn.contact b { color: var(--green, #25d366); }
+.tr-turn.agent b { color: var(--blue, #3b9eff); }
+.tr-at { display: inline-block; min-width: 38px; margin-right: 4px; font-variant-numeric: tabular-nums; opacity: .7; font-size: 11.5px; }
+.wa-transcript b { color: var(--wa-text); font-weight: 600; }
 .wa-deleted { font-style: italic; color: var(--wa-sub); }
 .wa-transcript { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(233, 237, 239, .12); font-size: 13px; color: var(--wa-sub); white-space: pre-wrap; max-width: 300px; }
 .wa-meta i { font-style: italic; margin-right: 2px; }

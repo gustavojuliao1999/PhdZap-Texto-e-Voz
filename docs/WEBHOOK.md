@@ -263,7 +263,7 @@ cliente escreve numa conversa resolvida ou aguardando, ela volta para `open` (e 
 
 ### Gravação e transcrição
 
-`call.recording` (a ligação precisa estar com **Gravar as ligações** ligado):
+`call.recording` (toda ligação atendida é gravada):
 
 ```json
 { "id": "C1A2B3D4E5F6", "remote": "5581992338229", "hasRecording": true, "recordingSeconds": 263,
@@ -272,10 +272,15 @@ cliente escreve numa conversa resolvida ou aguardando, ela volta para `open` (e 
 
 Baixe com `Authorization: Bearer <token da linha>` (arquivo `audio/ogg`).
 
-`call.transcript`:
+`call.transcript` (só com a transcrição ligada no servidor, `TRANSCRIBE` no `.env`):
 
 ```json
-{ "id": "C1A2B3D4E5F6", "remote": "5581992338229", "transcript": "Olá, gostaria de saber…" }
+{ "id": "C1A2B3D4E5F6", "remote": "5581992338229",
+  "transcript": "Cliente: Olá, gostaria de saber…\nMaria: Claro, posso ajudar.",
+  "transcriptSegments": [
+    { "at": 0.8, "who": "contact", "text": "Olá, gostaria de saber…" },
+    { "at": 4.1, "who": "agent", "text": "Claro, posso ajudar." }
+  ] }
 ```
 
 ### Status da linha

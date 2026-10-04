@@ -4,6 +4,7 @@ import path from "node:path";
 import { Prisma, type Call, type Contact, type Line, type Message, type PrismaClient, type QuickReply } from "@prisma/client";
 import type { CallView, MessageView } from "./line-manager.js";
 import { log } from "./log.js";
+import type { TranscriptTurn } from "./transcribe.js";
 import { VIDEO_CALL_MODES, type ContactRecord, type HandlerName, type LineConfig, type MessageRecord, type MessageStatus } from "./worker/protocol.js";
 
 export const newLineToken = (): string => `wvl_${randomBytes(24).toString("base64url")}`;
@@ -92,6 +93,7 @@ const toView = (c: Call): CallView => ({
   hasRecording: !!c.recordingFile,
   recordingSeconds: c.recordingSeconds ?? undefined,
   transcript: c.transcript ?? undefined,
+  ...(Array.isArray(c.transcriptSegments) ? { transcriptSegments: c.transcriptSegments as TranscriptTurn[] } : {}),
 });
 
 const toMessageView = (m: Message): MessageView => {
@@ -178,6 +180,10 @@ export class Store {
   /** Arquivo de cache da mídia de uma mensagem (evita baixar do WhatsApp toda vez). */
   mediaFileFor = (lineId: string, waId: string): string =>
     path.join(this.dataDir, "lines", lineId, "media", createHash("sha1").update(waId).digest("hex"));
+
+  /** Áudio de uma mensagem: guardado para sempre (fora do cache de mídia), para análise. */
+  audioFileFor = (lineId: string, waId: string): string =>
+    path.join(this.dataDir, "lines", lineId, "audio", createHash("sha1").update(waId).digest("hex"));
 
   /** Chave do super admin: env ADMIN_API_KEY ou gerada e salva em DATA_DIR/admin.json. */
   adminKey = (fromEnv?: string): { key: string; generated: boolean } => {

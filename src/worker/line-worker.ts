@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { VoipClient, type VideoCaptureRequest, type VideoFrame } from "baileys-caller";
 import { recordCall } from "../audio/recorder.js";
+import { transcriptionConfigured } from "../transcribe.js";
 import { hiddenMatcher } from "../hidden.js";
 import { VideoRelay, VideoSender } from "../video.js";
 import type { CallSession } from "../session.js";
@@ -90,12 +91,13 @@ manager.on("event", (event) => {
     const session = manager.get(event.call.id);
     if (session) trackVideo(session, !!event.call.isVideo && line.videoCalls === "video");
   }
-  // Gravação: começa quando a ligação conecta (se a linha grava).
-  if (event.type === "connected" && line.recordCalls) {
+  // Gravação: toda ligação atendida é gravada (só áudio). Com a transcrição ligada, guarda também
+  // os lados separados, para saber quem falou.
+  if (event.type === "connected") {
     const session = manager.get(event.call.id);
     const lineDir = path.dirname(authDir);
     if (session) {
-      recordCall(session, path.join(lineDir, "recordings"))
+      recordCall(session, path.join(lineDir, "recordings"), transcriptionConfigured())
         .then((r) => {
           if (r) send({ t: "event", event: { type: "recording", callId: session.id, file: path.relative(lineDir, r.file), seconds: r.seconds } });
         })

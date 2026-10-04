@@ -11,10 +11,10 @@ import { LineManager } from "./line-manager.js";
 import { log } from "./log.js";
 import { Alerts } from "./alerts.js";
 import { Attendance } from "./attendance.js";
-import { startMaintenance } from "./maintenance.js";
+import { cleanAudios, startMaintenance } from "./maintenance.js";
 import { watchLines } from "./monitor.js";
 import { Store } from "./store.js";
-import { Transcriber } from "./transcribe.js";
+import { sidesFileOf, Transcriber } from "./transcribe.js";
 import { WebhookDispatcher } from "./webhooks.js";
 
 const env = (name: string, fallback = ""): string => process.env[name]?.trim() || fallback;
@@ -77,13 +77,18 @@ startMaintenance({
   mediaCacheMaxMb: Number(env("MEDIA_CACHE_MAX_MB", "5120")),
   tasks: [
     webhooks.prune,
-    // Gravações mais antigas que RECORDINGS_DAYS (0 = guarda para sempre).
+    // Gravações das ligações e áudios das conversas mais antigos que RECORDINGS_DAYS (0 = guarda para sempre).
     async () => {
       const days = Number(env("RECORDINGS_DAYS", "0"));
       if (!days) return;
+      const audios = cleanAudios(store.dataDir, days);
+      if (audios) log.info(`${audios} áudio(s) antigo(s) de conversa removido(s)`);
       const old = await prisma.call.findMany({ where: { recordingFile: { not: null }, startedAt: { lt: new Date(Date.now() - days * 86_400_000) } } });
       for (const c of old) {
-        if (c.lineId) rmSync(lines.lineFile(c.lineId, c.recordingFile!), { force: true });
+        if (c.lineId) {
+          rmSync(lines.lineFile(c.lineId, c.recordingFile!), { force: true });
+          rmSync(lines.lineFile(c.lineId, sidesFileOf(c.recordingFile!)), { force: true });
+        }
         await prisma.call.update({ where: { id: c.id }, data: { recordingFile: null, recordingSeconds: null } });
       }
       if (old.length) log.info(`${old.length} gravação(ões) antiga(s) removida(s)`);

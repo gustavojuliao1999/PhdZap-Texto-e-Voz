@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { log } from "./log.js";
 import type { CallRecord } from "./session.js";
 import type { ContactView, Store } from "./store.js";
 import { SendLimiter } from "./rate-limit.js";
+import type { TranscriptTurn } from "./transcribe.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
 import {
@@ -39,6 +40,8 @@ export type CallView = CallRecord & {
   hasRecording?: boolean;
   recordingSeconds?: number;
   transcript?: string;
+  /** Transcrição separada por lado (contato / atendente), em ordem de tempo. */
+  transcriptSegments?: TranscriptTurn[];
   /** Chamada de vídeo com o vídeo do cliente disponível em GET /api/v1/calls/:id/video. */
   videoStream?: boolean;
   /** Vídeo enviado pelo atendente: câmera, tela ou nenhum. */
@@ -92,7 +95,10 @@ export type SyncStatus = {
 };
 
 /** Parte da ligação que mudou depois de encerrada. */
-export type CallUpdate = { id: string; remote: string; hasRecording?: boolean; recordingSeconds?: number; transcript?: string };
+export type CallUpdate = {
+  id: string; remote: string; hasRecording?: boolean; recordingSeconds?: number;
+  transcript?: string; transcriptSegments?: TranscriptTurn[];
+};
 
 /** Visão da linha para quem tem só o token da linha (sem QR, sem segredos). */
 export type LinePublic = {
@@ -387,6 +393,8 @@ export class LineManager extends EventEmitter {
   readonly #lines = new Map<string, LineRuntime>();
   /** Fotos de perfil: lineId:remote -> URL (as URLs do WhatsApp expiram). */
   readonly #photos = new Map<string, { url: string | null; at: number }>();
+  /** Downloads de mídia em andamento (o mesmo áudio pedido ao mesmo tempo baixa uma vez só). */
+  readonly #downloading = new Map<string, Promise<Buffer>>();
 
   readonly #limiter: SendLimiter;
   /** Sincronização completa do histórico, por linha. */
@@ -593,7 +601,7 @@ export class LineManager extends EventEmitter {
     const { message, raw } = await line.request<{ message: MessageRecord; raw: string }>(
       { cmd: "send-message", to, content, quotedRaw },
     );
-    if ("data" in content) await this.#cacheMedia(id, message.id, content.data);
+    if ("data" in content) await this.#cacheMedia(id, message.id, content.data, content.type === "audio");
     const view = await this.store.insertMessage(id, message, raw, opts.agent);
     if (!view) return { ...message, lineId: id, agent: opts.agent }; // o evento do WhatsApp chegou antes
     this.emit("event", { type: "message", lineId: id, message: view } satisfies LineEvent);
@@ -607,12 +615,43 @@ export class LineManager extends EventEmitter {
     if (!found) throw new HttpError(404, "Mensagem não encontrada");
     this.assertVisible(id, found.view.remote);
     if (!found.view.media || !found.raw) throw new HttpError(404, "Esta mensagem não tem mídia");
-    const file = this.store.mediaFileFor(id, waId);
-    const cached = await readFile(file).catch(() => null);
-    if (cached) return { view: found.view, data: cached };
-    const data = await line.request<Uint8Array>({ cmd: "download-media", raw: found.raw });
-    await this.#cacheMedia(id, waId, data);
-    return { view: found.view, data: Buffer.from(data.buffer, data.byteOffset, data.byteLength) };
+    return { view: found.view, data: await this.#loadMedia(line, id, found.view, found.raw) };
+  };
+
+  /**
+   * Caminho do áudio de uma mensagem, baixando do WhatsApp se ainda não estiver guardado
+   * (null se a mensagem não for áudio ou não der para baixar). Vale também para contatos ocultos.
+   */
+  audioFile = async (id: string, waId: string): Promise<string | null> => {
+    const line = this.#lines.get(id);
+    const found = await this.store.getMessage(id, waId);
+    if (!line || found?.view.type !== "audio" || !found.raw || found.view.deletedAt) return null;
+    const file = this.store.audioFileFor(id, waId);
+    if (!existsSync(file)) await this.#loadMedia(line, id, found.view, found.raw);
+    return existsSync(file) ? file : null;
+  };
+
+  /** Mídia do disco (áudio guardado ou cache) ou baixada do WhatsApp. Áudios ficam guardados para sempre. */
+  #loadMedia = async (line: LineRuntime, id: string, view: MessageView, raw: string): Promise<Buffer> => {
+    const audio = view.type === "audio";
+    const saved = (audio ? await readFile(this.store.audioFileFor(id, view.id)).catch(() => null) : null)
+      ?? await readFile(this.store.mediaFileFor(id, view.id)).catch(() => null);
+    if (saved) {
+      // Áudio que só estava no cache (de antes de guardar áudios): passa a ficar guardado.
+      if (audio && !existsSync(this.store.audioFileFor(id, view.id))) await this.#cacheMedia(id, view.id, saved, true);
+      return saved;
+    }
+    const key = `${id}:${view.id}`;
+    let pending = this.#downloading.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const data = await line.request<Uint8Array>({ cmd: "download-media", raw });
+        await this.#cacheMedia(id, view.id, data, audio);
+        return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      })().finally(() => this.#downloading.delete(key));
+      this.#downloading.set(key, pending);
+    }
+    return pending;
   };
 
   /** Marca como lida a mensagem recebida e as anteriores da mesma conversa. */
@@ -666,8 +705,9 @@ export class LineManager extends EventEmitter {
     log.warn(`gravação ${file}: ligação ${callId} não encontrada no histórico`);
   };
 
-  #cacheMedia = async (id: string, waId: string, data: Uint8Array): Promise<void> => {
-    const file = this.store.mediaFileFor(id, waId);
+  /** Guarda a mídia: áudio na pasta permanente (audio/), o resto no cache (media/, limpo pela manutenção). */
+  #cacheMedia = async (id: string, waId: string, data: Uint8Array, audio = false): Promise<void> => {
+    const file = audio ? this.store.audioFileFor(id, waId) : this.store.mediaFileFor(id, waId);
     try {
       mkdirSync(path.dirname(file), { recursive: true });
       await writeFile(file, data);
@@ -693,7 +733,12 @@ export class LineManager extends EventEmitter {
         this.store.saveContacts(config.id, [{ remote: rec.remote, remoteJid: rec.remoteJid, pushName: rec.pushName }]).catch(() => {});
       }
       this.store.insertMessage(config.id, rec, raw)
-        .then((view) => { if (view && !line.isHidden(view.remote)) this.emit("event", { type: "message", lineId: config.id, message: view } satisfies LineEvent); })
+        .then((view) => {
+          if (!view) return;
+          // Áudio da conversa (recebido ou enviado): baixa já e guarda, antes que o link do WhatsApp expire.
+          if (view.type === "audio") void this.audioFile(config.id, view.id).catch((err) => log.warn(`falha ao guardar áudio: ${err.message}`));
+          if (!line.isHidden(view.remote)) this.emit("event", { type: "message", lineId: config.id, message: view } satisfies LineEvent);
+        })
         .catch((err) => log.error(`falha ao gravar mensagem: ${err.message}`));
     });
     // Em fila: os blocos do histórico são gravados na ordem em que chegam.
@@ -713,7 +758,10 @@ export class LineManager extends EventEmitter {
       this.store.applyMessageUpdate(config.id, waId, u)
         .then((view) => {
           if (!view) return;
-          if (u.deleted) rmSync(this.store.mediaFileFor(config.id, waId), { force: true });
+          if (u.deleted) {
+            rmSync(this.store.mediaFileFor(config.id, waId), { force: true });
+            rmSync(this.store.audioFileFor(config.id, waId), { force: true });
+          }
           if (line.isHidden(view.remote)) return;
           this.emit("event", { type: "message-update", lineId: config.id, message: view } satisfies LineEvent);
         })

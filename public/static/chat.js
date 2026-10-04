@@ -1,5 +1,5 @@
 // Chat de mensagens do painel (visual do WhatsApp). Usa a API da linha com a sessão do painel (?line=).
-import { esc, fmtPhone } from "/static/voice.js";
+import { esc, fmtPhone, transcriptHtml } from "/static/voice.js";
 import { toast } from "/static/admin.js";
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
@@ -442,7 +442,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
           <div class="wa-wave"><div class="wa-bars">${b}</div>
             <div class="wa-audio-meta"><span class="cur">${fmtDur(m.media?.seconds)}</span></div></div>
           ${m.direction === "outgoing" ? av : ""}
-        </div>${m.transcript ? `<div class="wa-transcript" title="Transcrição automática">📝 ${esc(m.transcript)}</div>` : ""}`;
+        </div>${m.transcript ? `<div class="wa-transcript" title="Transcrição automática">📝 <b>${esc(m.direction === "incoming" ? (m.participantName || nameOf(kOf(m))) : (m.agent || "Atendente"))}:</b> ${esc(m.transcript)}</div>` : ""}`;
       }
       case "document": {
         const name = m.media?.fileName || "Documento";
@@ -547,7 +547,7 @@ export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, can
           <div class="wa-audio-meta"><span class="cur">${fmtDur(call.recordingSeconds)}</span></div></div></div>` : "";
     return `<div class="wa-call${answered ? "" : " missed"}">
       <div class="wa-call-line">${icon} <b>${what}</b> · ${fmtTime(call.startedAt)}${dur ? ` · ${dur}` : ""}${call.ownerAgent ? ` · ${esc(call.ownerAgent)}` : ""}</div>
-      ${rec}${call.transcript ? `<details class="wa-call-tr"><summary>📝 Transcrição</summary>${esc(call.transcript)}</details>` : ""}
+      ${rec}${call.transcript ? `<details class="wa-call-tr"><summary>📝 Transcrição</summary>${transcriptHtml(call, nameOf(keyOf(call.lineId ?? lineOf(active), call.remote)))}</details>` : ""}
     </div>`;
   };
 

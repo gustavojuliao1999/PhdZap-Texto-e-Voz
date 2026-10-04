@@ -154,7 +154,8 @@ O mesmo arquivo abre no Insomnia, no Bruno e no Hoppscotch.
 | `ownerClientId` | string? | `clientId` que ficou com a ligação (só na API/WS, não no webhook). |
 | `hasRecording` | boolean? | Há gravação: [`GET /api/v1/calls/:id/recording`](#get-apiv1callsidrecording--gravação). |
 | `recordingSeconds` | number? | Duração da gravação. |
-| `transcript` | string? | Transcrição automática da gravação. |
+| `transcript` | string? | Transcrição automática da gravação (`Cliente: …` / `Atendente: …`, uma fala por linha). |
+| `transcriptSegments` | array? | A mesma transcrição por fala: `[{ "at": 3.2, "who": "contact" \| "agent", "text": "…" }]` (`at` em segundos). |
 
 ### Mensagem (`Message`)
 
@@ -193,7 +194,7 @@ O mesmo arquivo abre no Insomnia, no Bruno e no Hoppscotch.
 | `participant` / `participantName` | string? | Grupos: número e nome de quem mandou. |
 | `editedAt` | data? | A mensagem foi editada (o `text` já é o novo). |
 | `deletedAt` | data? | Apagada para todos: o conteúdo some (`text`, `media`). |
-| `transcript` | string? | Transcrição automática do áudio de voz (se ligada na linha). |
+| `transcript` | string? | Transcrição automática do áudio de voz (recebido ou enviado; com `TRANSCRIBE` ligado no servidor). |
 | `status` | string | Enviadas: `pending` → `sent` → `delivered` → `read` → `played` (áudio ouvido), ou `error`. Recebidas: `delivered` até alguém ler pelo gateway, depois `read`. O status só avança, nunca volta. |
 | `agent` | string? | Quem enviou pelo gateway: nome do usuário do painel ou o `agent` informado na API (padrão `API`). Vazio em recebidas e nas enviadas pelo celular. |
 | `timestamp` | data | Data da mensagem no WhatsApp. |
@@ -279,8 +280,8 @@ não encontrado no WhatsApp, `503` linha desconectada.
 
 ### `GET /api/v1/calls/:id/recording` — gravação
 
-Arquivo `audio/ogg` (opus, mono) da ligação, com suporte a `Range`. Permissão: `view`. Existe quando a
-linha tem **Gravar as ligações** ligado (`recordCalls`); `404` se não houver gravação.
+Arquivo `audio/ogg` (opus, mono) da ligação, com suporte a `Range`. Permissão: `view`. Toda ligação
+atendida é gravada (só o áudio); `404` se não houver gravação.
 
 ### `GET /api/v1/calls/:id/video` — vídeo do cliente
 
@@ -702,8 +703,6 @@ Configurações da linha:
 | `businessHours` | objeto | Por dia da semana (`"0"` = domingo … `"6"` = sábado): `{"1": [["08:00","18:00"]], "0": []}`. Fuso: `TZ` do servidor. |
 | `offHoursMessage` | string | Resposta automática fora do horário (uma vez a cada 12 h por contato; `{nome}` = primeiro nome). |
 | `groupsEnabled` | boolean | Recebe e envia mensagens de grupos. |
-| `recordCalls` | boolean | Grava as ligações (avise os contatos — LGPD). |
-| `transcribeCalls` / `transcribeVoiceNotes` | boolean | Transcreve gravações / áudios de voz recebidos (precisa de `TRANSCRIBE_API_KEY` ou `TRANSCRIBE_API_URL`). |
 
 ```bash
 curl -X PATCH $GW/admin/api/lines/1b9431a0 -H "Authorization: Bearer $ADMIN_API_KEY" \

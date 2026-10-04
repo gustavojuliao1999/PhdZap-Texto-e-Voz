@@ -14,6 +14,7 @@ import { recordCall } from "../src/audio/recorder.js";
 import { parseOutgoing } from "../src/http/messages-api.js";
 import { assertPublicUrl, isPrivateIp } from "../src/net/safe-fetch.js";
 import { SendLimiter } from "../src/rate-limit.js";
+import { groupWords, mergeTurns, sidesFileOf, turnsToText } from "../src/transcribe.js";
 import { VideoRelay } from "../src/video.js";
 import { WebhookDispatcher } from "../src/webhooks.js";
 
@@ -129,6 +130,35 @@ describe("gravação de ligação", { skip: !hasFfmpeg && "sem ffmpeg" }, () => 
       assert.ok(Math.abs(dur - 2) < 0.1, `duração ${dur}`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it("com keepSides, guarda os lados em canais separados (esq. contato, dir. atendente)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rec-"));
+    try {
+      const s: any = new EventEmitter();
+      s.id = "T3";
+      const p = recordCall(s, dir, true);
+      // 1 s só o atendente (contato em silêncio), depois 1 s só o contato. Tom de 440 Hz.
+      const tone = (i: number) => Float32Array.from({ length: 320 }, (_, n) => 0.5 * Math.sin((2 * Math.PI * 440 * (i * 320 + n)) / 16000));
+      for (let i = 0; i < 50; i++) s.emit("sent-audio", tone(i));
+      for (let i = 0; i < 50; i++) s.emit("audio", new Float32Array(320));
+      for (let i = 0; i < 50; i++) s.emit("audio", tone(i));
+      s.emit("ended", "hangup");
+      const r = await p;
+      assert.ok(r);
+      const sides = sidesFileOf(r.file);
+      const probe = (f: string, entry: string) => execFileSync("ffprobe", ["-v", "error", "-show_entries", entry, "-of", "csv=p=0", f]).toString().trim();
+      assert.equal(probe(sides, "stream=channels"), "2");
+      assert.equal(probe(r.file, "stream=channels"), "1");
+      // Volume de cada canal em cada metade: o atendente fala no 1º segundo, o contato no 2º.
+      const rms = (ch: 0 | 1, start: number) => {
+        const out = execFileSync("ffmpeg", ["-v", "error", "-ss", String(start + 0.2), "-t", "0.6", "-i", sides, "-af", `pan=mono|c0=c${ch}`, "-f", "s16le", "-ac", "1", "-"]);
+        let sum = 0;
+        for (let i = 0; i < out.length; i += 2) sum += (out.readInt16LE(i) / 32768) ** 2;
+        return Math.sqrt(sum / (out.length / 2));
+      };
+      assert.ok(rms(1, 0) > 0.1 && rms(0, 0) < 0.05, `1º segundo: contato ${rms(0, 0)}, atendente ${rms(1, 0)}`);
+      assert.ok(rms(0, 1) > 0.1 && rms(1, 1) < 0.05, `2º segundo: contato ${rms(0, 1)}, atendente ${rms(1, 1)}`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("ligação curta demais não gera arquivo", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "rec-"));
     const s: any = new EventEmitter();
@@ -215,5 +245,31 @@ describe("vídeo do cliente (VideoRelay)", () => {
     relay.push({ data: new Uint8Array(10), width: 320, height: 240, format: 1, orientation: 1, timestamp: 0, isKeyFrame: true });
     relay.push({ data: new Uint8Array(320 * 240 * 4), width: 320, height: 240, format: 100, orientation: 1, timestamp: 0, isKeyFrame: true });
     relay.stop();
+  });
+});
+
+describe("transcrição: quem falou", () => {
+  it("junta os dois lados em ordem de tempo e une falas seguidas do mesmo lado", () => {
+    const turns = mergeTurns(
+      [{ start: 0.5, end: 2, text: "Oi, bom dia." }, { start: 6, end: 8, text: "Quero saber do pedido." }, { start: 8.2, end: 9, text: "É o 123." }],
+      [{ start: 2.5, end: 5, text: "Bom dia! Em que posso ajudar?" }],
+    );
+    assert.deepEqual(turns, [
+      { at: 0.5, who: "contact", text: "Oi, bom dia." },
+      { at: 2.5, who: "agent", text: "Bom dia! Em que posso ajudar?" },
+      { at: 6, who: "contact", text: "Quero saber do pedido. É o 123." },
+    ]);
+    assert.equal(turnsToText(turns, "Maria"), "Cliente: Oi, bom dia.\nMaria: Bom dia! Em que posso ajudar?\nCliente: Quero saber do pedido. É o 123.");
+  });
+  it("separa as palavras em falas nas pausas (intervalo ou palavra que engole o silêncio)", () => {
+    const w = (start: number, end: number, text: string) => ({ start, end, text });
+    // Saída real do whisper.cpp com VAD: "pedido," vai de 4,22 s a 8,55 s (a pausa ficou dentro dela).
+    const out = groupWords([w(0.5, 1.09, " Olá,"), w(1.09, 1.46, " bom"), w(3.98, 4.22, " meu"), w(4.22, 8.55, " pedido,"),
+      w(8.55, 9, " o"), w(9, 9.52, " número"), w(12, 12.4, " três.")]);
+    assert.deepEqual(out.map((s) => [s.start, s.text]), [[0.5, " Olá, bom"], [3.98, " meu pedido,"], [8.55, " o número"], [12, " três."]]);
+    assert.ok(out[1].end <= 5.1, `fim da fala antes da pausa: ${out[1].end}`);
+  });
+  it("arquivo dos lados fica ao lado da gravação", () => {
+    assert.equal(sidesFileOf("recordings/ABC.ogg"), "recordings/ABC.sides.ogg");
   });
 });

@@ -2,12 +2,31 @@
 # PhdZap. O baileys-caller vem do contexto extra "baileys-caller"
 # (docker compose: build.additional_contexts → ../baileys-caller).
 
+# ── whisper.cpp (transcrição local, TRANSCRIBE=local) ──
+# Compilado para rodar em qualquer CPU x86/ARM: escolhe na hora a melhor variante (AVX2, AVX-512…).
+FROM node:22-bookworm-slim AS whisper
+ARG WHISPER_CPP_VERSION=v1.9.4
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git cmake g++ make ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${WHISPER_CPP_VERSION} https://github.com/ggml-org/whisper.cpp /src \
+ && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+      -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+      -DWHISPER_BUILD_TESTS=OFF -DWHISPER_SDL2=OFF -DWHISPER_CURL=OFF \
+      -DCMAKE_BUILD_RPATH='$ORIGIN' \
+ && cmake --build /build -j"$(nproc)" --target whisper-cli \
+ && mkdir -p /opt/whisper \
+ && cp -a /build/bin/whisper-cli /build/bin/*.so* /opt/whisper/
+
 FROM node:22-bookworm-slim
 
 # ffmpeg: decodifica áudio (play/arquivos) · openssl: Prisma · tini: sinais/zumbis
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg openssl ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=whisper /opt/whisper /opt/whisper
+ENV WHISPER_CLI=/opt/whisper/whisper-cli
 
 # ── baileys-caller (biblioteca de voz, já compilada em dist/) ──
 WORKDIR /app/baileys-caller

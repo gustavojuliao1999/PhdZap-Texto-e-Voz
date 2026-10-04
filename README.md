@@ -285,9 +285,9 @@ grandes. Uma pessoa em vários grupos soma os acessos.
 - **Contatos ocultos** (administradores): números cujas mensagens e ligações ficam gravadas, mas não
   aparecem no painel, no atendimento, na API nem no webhook; as ligações deles tocam só no celular.
   Configure em Configurações › Contatos ocultos, ou no chat: Dados do contato › Ocultar este contato.
-- **Gravação das ligações** (opcional por telefone; avise os contatos, pela LGPD) e **transcrição**
-  de ligações e áudios de voz por uma API compatível com OpenAI (`TRANSCRIBE_API_KEY`;
-  `TRANSCRIBE_API_URL` aceita Groq ou um whisper local).
+- **Áudio guardado:** o áudio de toda ligação atendida e todos os áudios das conversas (recebidos e
+  enviados) ficam guardados para análise (vídeo não). Avise os contatos, pela LGPD. Veja
+  [Transcrição](#transcrição-de-áudio-para-texto).
 - **Métricas** (`/admin/metrics`): ligações recebidas, atendidas e perdidas, espera e conversa médias,
   mensagens, por dia, por hora e por atendente.
 - **Auditoria** (`/admin/audit`, administradores): logins e alterações, com segredos mascarados.
@@ -390,6 +390,33 @@ done
 AUTO_DEPLOY=0 git commit ...           # no baileys-caller: commit sem atualizar o container
 ```
 
+### Transcrição de áudio para texto
+
+**Desligada por padrão.** Quando ligada, transcreve as ligações e os áudios de voz das conversas, e o
+texto aparece junto do áudio no chat, no atendimento e no histórico:
+
+- **Ligações:** separadas por quem falou (cliente / atendente), com o tempo de cada fala. A gravação
+  guarda cada lado num canal, só para isso.
+- **Áudios de voz:** recebidos e enviados, com o nome de quem mandou.
+
+| `TRANSCRIBE` | Como funciona |
+|---|---|
+| `off` (padrão) | Desligada. O áudio continua sendo guardado. |
+| `local` | **whisper.cpp dentro do próprio container**, sem serviço externo. O modelo é baixado na primeira vez para `DATA_DIR/models` e roda com prioridade baixa, para não atrapalhar as ligações. |
+| `api` | API compatível com OpenAI (`/v1/audio/transcriptions`): OpenAI, Groq… (`TRANSCRIBE_API_URL`, `TRANSCRIBE_API_KEY`). |
+
+```bash
+# .env: servidor barato (2 vCPU / 2 GB)
+TRANSCRIBE=local
+TRANSCRIBE_MODEL=small-q5_1          # a lista de modelos está comentada no .env.example
+TRANSCRIBE_LANGUAGE=pt
+```
+
+Com 4 vCPU, `large-v3-turbo-q5_0` transcreve bem melhor. Uma transcrição roda por vez; as ligações
+gravadas com a transcrição desligada não têm os lados separados (o texto sai sem dizer quem falou).
+Fora do Docker, instale o `whisper-cli` do [whisper.cpp](https://github.com/ggml-org/whisper.cpp) e
+aponte `WHISPER_CLI` para ele se não estiver no `PATH`.
+
 **Operação:**
 
 | Variável | Para quê |
@@ -397,7 +424,7 @@ AUTO_DEPLOY=0 git commit ...           # no baileys-caller: commit sem atualizar
 | `ALERT_WEBHOOK_URL` | Alertas (telefone fora do ar por 2 min, processo da linha caindo, webhook falhando) para Slack, Discord ou qualquer URL. |
 | `LOG_FORMAT=json` | Logs estruturados, uma linha JSON por evento. |
 | `MEDIA_CACHE_DAYS`, `MEDIA_CACHE_MAX_MB` | Limpeza do cache de mídia (padrão 30 dias e 5 GB). |
-| `RECORDINGS_DAYS` | Apaga gravações mais antigas (0 = guarda para sempre). |
+| `RECORDINGS_DAYS` | Apaga gravações de ligação e áudios das conversas mais antigos (0 = guarda para sempre). |
 | `AUDIT_DAYS` | Tempo de guarda da auditoria (padrão 365). |
 | `ALLOW_PRIVATE_URLS` | Permite mídia de endereços da rede interna (bloqueado por padrão). |
 | `TZ` | Fuso do horário de atendimento, dos limites diários e das métricas. |

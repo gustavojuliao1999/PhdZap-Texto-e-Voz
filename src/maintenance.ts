@@ -50,6 +50,25 @@ export const cleanMediaCache = (dataDir: string, days: number, maxMb: number): {
   return { removed, freedMb: Math.round((freed / 1048576) * 10) / 10 };
 };
 
+/** Apaga os áudios guardados das conversas (DATA_DIR/lines/<id>/audio) mais antigos que N dias. */
+export const cleanAudios = (dataDir: string, days: number): number => {
+  if (!(days > 0)) return 0;
+  const cutoff = Date.now() - days * 86_400_000;
+  let removed = 0;
+  let lineIds: string[] = [];
+  try { lineIds = readdirSync(path.join(dataDir, "lines")); } catch { return 0; }
+  for (const id of lineIds) {
+    const dir = path.join(dataDir, "lines", id, "audio");
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try { if (statSync(file).mtimeMs < cutoff) { rmSync(file, { force: true }); removed++; } } catch {}
+    }
+  }
+  return removed;
+};
+
 /** Roda a manutenção agora e depois a cada hora. */
 export const startMaintenance = (opts: MaintenanceOptions): void => {
   const run = async (): Promise<void> => {

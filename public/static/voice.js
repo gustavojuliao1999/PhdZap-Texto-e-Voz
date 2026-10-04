@@ -76,6 +76,15 @@ export const fmtDuration = (fromIso, toIso) => {
 
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+/** Transcrição da ligação: uma fala por linha, com o tempo e quem falou (quando a gravação separa os lados). */
+export const transcriptHtml = (call, contactName = "Cliente") => {
+  const turns = call.transcriptSegments;
+  if (!Array.isArray(turns) || !turns.length) return `<div class="tr-turn">${esc(call.transcript)}</div>`;
+  const agent = call.ownerAgent || "Atendente";
+  const at = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  return turns.map((t) => `<div class="tr-turn ${t.who === "contact" ? "contact" : "agent"}"><span class="tr-at">${at(t.at)}</span><b>${esc(t.who === "contact" ? contactName : agent)}</b> ${esc(t.text)}</div>`).join("");
+};
+
 // ─── áudio ────────────────────────────────────────────────────────────────
 
 const WORKLET = `

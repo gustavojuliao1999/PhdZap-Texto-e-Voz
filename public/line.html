@@ -325,10 +325,9 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         <label class="check"><input type="checkbox" id="fGroups"> Receber e enviar mensagens de grupos</label>
 
         <h4>Gravação e transcrição</h4>
-        <label class="check"><input type="checkbox" id="fRecord"> Gravar as ligações</label>
+        <div class="hint" style="margin-top:0">O áudio de todas as ligações atendidas e todos os áudios das conversas (recebidos e enviados)
+          ficam guardados para análise. Vídeo não é gravado.</div>
         <div class="hint">⚠️ Pela LGPD, avise quem liga que a ligação é gravada (ex.: mensagem no início ou aviso no site).</div>
-        <label class="check"><input type="checkbox" id="fTrCalls"> Transcrever as ligações gravadas</label>
-        <label class="check"><input type="checkbox" id="fTrVoice"> Transcrever os áudios de voz recebidos</label>
         <div class="hint" id="trHint"></div>
 
         <h4>Limite de envio de mensagens</h4>
@@ -432,7 +431,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
 </main>
 
 <script type="module">
-import { esc, fmtPhone, fmtDuration } from "/static/voice.js";
+import { esc, fmtPhone, fmtDuration, transcriptHtml } from "/static/voice.js";
 import { $, STATUS, api, act, toast, connectAdminEvents, callLabel, callResult, loadMe, renderNav } from "/static/admin.js";
 import { mountChat, preview } from "/static/chat.js";
 
@@ -548,7 +547,7 @@ const renderHistory = () => {
     <td class="num">${c.connectedAt ? fmtDuration(c.connectedAt, c.endedAt) : "—"}</td>
     <td>${callResult(c)}</td>
     <td>${c.hasRecording ? `<audio controls preload="none" style="height:32px;max-width:220px" src="/api/v1/calls/${encodeURIComponent(c.id)}/recording?line=${encodeURIComponent(lineId)}"></audio>` : "—"}
-      ${c.transcript ? `<details style="max-width:320px;font-size:12.5px"><summary style="cursor:pointer;color:var(--blue)">Transcrição</summary><div style="white-space:pre-wrap;color:var(--muted)">${esc(c.transcript)}</div></details>` : ""}</td>
+      ${c.transcript ? `<details style="max-width:420px;font-size:12.5px"><summary style="cursor:pointer;color:var(--blue)">Transcrição</summary><div style="color:var(--muted)">${transcriptHtml(c, c.pushName || fmtPhone(c.remote))}</div></details>` : ""}</td>
   </tr>`).join("") || `<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nenhuma ligação ainda</td></tr>`;
 };
 
@@ -567,9 +566,6 @@ const fillForm = () => {
   renderHours(line.businessHours ?? {});
   $("fOffMsg").value = line.offHoursMessage ?? "";
   $("fGroups").checked = !!line.groupsEnabled;
-  $("fRecord").checked = !!line.recordCalls;
-  $("fTrCalls").checked = !!line.transcribeCalls;
-  $("fTrVoice").checked = !!line.transcribeVoiceNotes;
   syncAttendanceFields();
   $("fRateMin").value = line.rateLimitPerMinute ?? 20;
   $("fRateDay").value = line.rateLimitPerDay ?? 1000;
@@ -637,13 +633,12 @@ const readHours = () => Object.fromEntries(DAYS.map(([d]) => {
 }));
 const syncAttendanceFields = () => {
   $("bhFields").hidden = !$("fBhEnabled").checked;
-  const tr = !!me.transcriptionAvailable;
-  $("fTrCalls").disabled = !tr || !$("fRecord").checked;
-  $("fTrVoice").disabled = !tr;
-  $("trHint").textContent = tr ? "A transcrição usa o serviço configurado em TRANSCRIBE_API_URL." :
-    "Para transcrever, configure TRANSCRIBE_API_KEY (e TRANSCRIBE_API_URL) no .env do gateway.";
+  const tr = me.transcription ?? { mode: "off" };
+  $("trHint").textContent = tr.mode === "local" ? `📝 Transcrição ligada: whisper no próprio servidor (modelo ${tr.model}). Ligações aparecem separadas por quem falou.`
+    : tr.mode === "api" ? `📝 Transcrição ligada: API externa (modelo ${tr.model}). Ligações aparecem separadas por quem falou.`
+    : "📝 Transcrição desligada. Para ligar, defina TRANSCRIBE=local (ou api) e TRANSCRIBE_MODEL no .env do gateway.";
 };
-$("fBhEnabled").onchange = $("fRecord").onchange = syncAttendanceFields;
+$("fBhEnabled").onchange = syncAttendanceFields;
 
 // ─── respostas rápidas ──────────────────────────────────────────────────
 let qrEditing = null;
@@ -814,9 +809,6 @@ $("configForm").addEventListener("submit", act(async (e) => {
     businessHours: readHours(),
     offHoursMessage: $("fOffMsg").value,
     groupsEnabled: $("fGroups").checked,
-    recordCalls: $("fRecord").checked,
-    transcribeCalls: $("fTrCalls").checked,
-    transcribeVoiceNotes: $("fTrVoice").checked,
     rateLimitPerMinute: Number($("fRateMin").value || 0),
     rateLimitPerDay: Number($("fRateDay").value || 0),
     webhookUrl: $("fWebhookUrl").value.trim(),
