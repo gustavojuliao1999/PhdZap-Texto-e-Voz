@@ -62,7 +62,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `Erro ${res.status}`);
-      location.href = "/admin";
+      location.href = "/"; // o servidor manda para o painel ou para o atendimento
     } catch (ex) {
       $("err").textContent = ex.message;
       $("btn").disabled = false;

@@ -34,6 +34,19 @@
   .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
   .checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 12px; max-height: 180px; overflow-y: auto;
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .prow-all { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px 8px 0 0; background: var(--panel-2); }
+  .prow-all select { width: auto; padding: 5px 8px; font-size: 13px; }
+  .prows { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; max-height: 46vh; overflow-y: auto; }
+  .prow { padding: 10px 12px; border-top: 1px solid var(--line); }
+  .prow:first-child { border-top: 0; }
+  .prow-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .prow-main .check { margin: 0; flex: 1; min-width: 200px; }
+  .prow-main small { color: var(--muted); }
+  .prow-main select { width: auto; padding: 5px 8px; font-size: 13px; }
+  .prow-main button { padding: 5px 9px; font-size: 12px; }
+  .prow.off .prow-main select, .prow.off [data-adv] { opacity: .35; pointer-events: none; }
+  .padv { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 2px 14px; margin: 8px 0 0 26px; font-size: 13px; }
+  .padv .check { margin: 4px 0; font-size: 13px; }
   .matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
   .matrix th, .matrix td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: center; }
   .matrix th:first-child, .matrix td:first-child { text-align: left; }
@@ -103,9 +116,13 @@
       </div>
       <label>Membros</label>
       <div class="checklist" id="gMembers"></div>
-      <label>Permissões por telefone</label>
-      <div class="matrix-wrap"><table class="matrix" id="gMatrix"></table></div>
-      <div class="hint">Use o atalho de cada linha para aplicar um perfil pronto, ou marque individualmente. Qualquer permissão inclui “ver”.</div>
+      <label>Números que o grupo acessa</label>
+      <div class="prow-all" id="gAll">
+        <label class="check" style="margin:0"><input type="checkbox" id="gAllOn"> Todos os números</label>
+        <select id="gAllPreset" title="Aplicar a todos os números marcados"><option value="">Perfil para todos…</option></select>
+      </div>
+      <div class="prows" id="gMatrix"></div>
+      <div class="hint">Quem está no grupo vê, no <b>Atendimento</b>, as conversas e ligações só dos números marcados. Quem só atende entra direto no Atendimento; com <b>Supervisor</b> ou <b>Gerente</b>, também acessa o painel do número.</div>
     </div>
     <div class="modal-foot">
       <button type="button" class="red" id="groupDelete" style="margin-right:auto">Excluir grupo</button>
@@ -125,12 +142,17 @@ let editingUser = null, editingGroup = null;
 const PRESETS = {
   "": [],
   atendente: ["view", "receive", "dial", "messages"],
+  mensagens: ["view", "messages"],
+  ligacoes: ["view", "receive", "dial"],
   receptor: ["view", "receive"],
   supervisor: ["view", "receive", "dial", "messages", "connection"],
   gerente: ["view", "receive", "dial", "messages", "connection", "settings", "integrations"],
   leitura: ["view"],
 };
-const PRESET_LABELS = { "": "—", atendente: "Atendente", receptor: "Só receber", supervisor: "Supervisor", gerente: "Gerente", leitura: "Só ver" };
+const PRESET_LABELS = {
+  "": "Personalizado", atendente: "Atendente (mensagens e ligações)", mensagens: "Só mensagens", ligacoes: "Só ligações",
+  receptor: "Só receber ligações", supervisor: "Supervisor (+ conectar QR)", gerente: "Gerente (tudo)", leitura: "Só ver",
+};
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleString("pt-BR") : "nunca");
 
@@ -217,34 +239,64 @@ const openGroup = (g = null) => {
 
   const grants = new Map((g?.lines ?? []).map((l) => [l.lineId, new Set(l.permissions)]));
   const perms = me.permissions;
-  $("gMatrix").innerHTML = lines.length ? `
-    <thead><tr><th>Telefone</th><th>Perfil</th>${perms.map((p) => `<th title="${esc(me.permissionLabels[p])}">${esc(me.permissionLabels[p])}</th>`).join("")}</tr></thead>
-    <tbody>${lines.map((l) => {
-      const set = grants.get(l.id) ?? new Set();
-      return `<tr data-line="${l.id}">
-        <td>${esc(l.name)}</td>
-        <td><select data-preset>${Object.entries(PRESET_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></td>
-        ${perms.map((p) => `<td><input type="checkbox" data-perm="${p}" ${set.has(p) ? "checked" : ""} aria-label="${esc(me.permissionLabels[p])} em ${esc(l.name)}"></td>`).join("")}
-      </tr>`;
-    }).join("")}</tbody>` : `<tbody><tr><td class="muted">Nenhum telefone cadastrado.</td></tr></tbody>`;
+  const presetOptions = Object.entries(PRESET_LABELS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("gAllPreset").innerHTML = `<option value="">Perfil para todos…</option>` + Object.entries(PRESET_LABELS).filter(([k]) => k).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("gMatrix").innerHTML = lines.length ? lines.map((l) => {
+    const set = grants.get(l.id) ?? new Set();
+    return `<div class="prow" data-line="${l.id}">
+      <div class="prow-main">
+        <label class="check"><input type="checkbox" data-access ${set.size ? "checked" : ""}> <b>${esc(l.name)}</b> ${l.phone ? `<small>${esc(l.phone)}</small>` : ""}</label>
+        <select data-preset title="Perfil neste número">${presetOptions}</select>
+        <button type="button" class="ghost" data-adv>Personalizar ▾</button>
+      </div>
+      <div class="padv" hidden>${perms.map((p) => `<label class="check"><input type="checkbox" data-perm="${p}" ${set.has(p) ? "checked" : ""}> ${esc(me.permissionLabels[p])}</label>`).join("")}</div>
+    </div>`;
+  }).join("") : `<div class="prow muted">Nenhum telefone cadastrado.</div>`;
 
-  // Atalhos de perfil e "qualquer permissão inclui ver".
-  $("gMatrix").querySelectorAll("tr[data-line]").forEach((tr) => {
-    const boxes = [...tr.querySelectorAll("[data-perm]")];
-    const sel = tr.querySelector("[data-preset]");
-    const syncPreset = () => {
+  const rows = [...$("gMatrix").querySelectorAll(".prow[data-line]")];
+  const syncAll = () => {
+    const on = rows.filter((r) => r.querySelector("[data-access]").checked).length;
+    $("gAllOn").checked = rows.length > 0 && on === rows.length;
+    $("gAllOn").indeterminate = on > 0 && on < rows.length;
+  };
+  // Perfil pronto, "Personalizar" e "qualquer permissão inclui ver".
+  rows.forEach((row) => {
+    const boxes = [...row.querySelectorAll("[data-perm]")];
+    const sel = row.querySelector("[data-preset]");
+    const access = row.querySelector("[data-access]");
+    const set = (ps) => boxes.forEach((b) => { b.checked = ps.includes(b.dataset.perm); });
+    const sync = () => {
       const on = boxes.filter((b) => b.checked).map((b) => b.dataset.perm).sort().join(",");
-      sel.value = Object.entries(PRESETS).find(([, ps]) => [...ps].sort().join(",") === on)?.[0] ?? "";
+      access.checked = !!on;
+      row.classList.toggle("off", !on);
+      sel.value = Object.entries(PRESETS).find(([k, ps]) => k && [...ps].sort().join(",") === on)?.[0] ?? "";
+      syncAll();
     };
-    sel.onchange = () => { const ps = PRESETS[sel.value]; boxes.forEach((b) => b.checked = ps.includes(b.dataset.perm)); };
+    row.applyPreset = (k) => { if (PRESETS[k]?.length) { set(PRESETS[k]); sync(); } };
+    access.onchange = () => { set(access.checked ? PRESETS.atendente : []); sync(); };
+    sel.onchange = () => { if (sel.value) set(PRESETS[sel.value]); else row.querySelector(".padv").hidden = false; sync(); };
+    row.querySelector("[data-adv]").onclick = () => { const a = row.querySelector(".padv"); a.hidden = !a.hidden; };
     boxes.forEach((b) => b.onchange = () => {
       const view = boxes.find((x) => x.dataset.perm === "view");
       if (b.checked && b !== view) view.checked = true;
       if (!view.checked) boxes.forEach((x) => x.checked = false);
-      syncPreset();
+      sync();
     });
-    syncPreset();
+    sync();
+    // Personalizado (nenhum perfil pronto): já abre as permissões.
+    if (access.checked && !sel.value) row.querySelector(".padv").hidden = false;
   });
+  $("gAllOn").onchange = () => rows.forEach((r) => {
+    const access = r.querySelector("[data-access]");
+    if (access.checked !== $("gAllOn").checked) { access.checked = $("gAllOn").checked; access.onchange(); }
+  });
+  $("gAllPreset").onchange = () => {
+    const k = $("gAllPreset").value;
+    rows.forEach((r) => { if (r.querySelector("[data-access]").checked || $("gAllOn").checked) r.applyPreset(k); });
+    if (!rows.some((r) => r.querySelector("[data-access]").checked)) rows.forEach((r) => r.applyPreset(k));
+    $("gAllPreset").value = "";
+  };
+  syncAll();
   $("groupDelete").hidden = !g;
   $("groupDlg").showModal();
   $("gName").focus();
@@ -256,7 +308,7 @@ $("groupForm").addEventListener("submit", act(async (e) => {
     name: $("gName").value,
     description: $("gDesc").value,
     memberIds: [...$("gMembers").querySelectorAll("input:checked")].map((i) => i.value),
-    lines: [...$("gMatrix").querySelectorAll("tr[data-line]")].map((tr) => ({
+    lines: [...$("gMatrix").querySelectorAll(".prow[data-line]")].map((tr) => ({
       lineId: tr.dataset.line,
       permissions: [...tr.querySelectorAll("[data-perm]:checked")].map((b) => b.dataset.perm),
     })).filter((l) => l.permissions.length),

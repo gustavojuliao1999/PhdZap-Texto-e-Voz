@@ -268,3 +268,10 @@ body.chat-mode main { max-width: 1500px; padding-bottom: 16px; }
   .wa-head-tools select { max-width: 110px; }
   .wa-head-tools .wa-status { display: none; }
 }
+
+/* ── vários números ─────────────────────────────────────────────────── */
+.wa-linebar { padding: 0 12px 8px; }
+.wa-linebar select, .wa-new select { width: 100%; background: var(--wa-input); color: var(--wa-text); border: 0; border-radius: 8px; padding: 8px 10px; font-size: 13.5px; }
+.wa-new { flex-wrap: wrap; }
+.wa-new select { flex: 1 1 100%; }
+.wa-line { flex: none; font-size: 11px; color: #9de1d1; background: rgba(0, 168, 132, .14); border-radius: 6px; padding: 1px 6px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

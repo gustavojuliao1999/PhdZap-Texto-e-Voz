@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { clientIp, makeAudit } from "../audit.js";
 import { verifyPassword } from "../auth/passwords.js";
 import {
-  PERMISSION_LABELS, PERMISSIONS, can, displayName, isAdmin, permissionsOn,
+  PERMISSION_LABELS, PERMISSIONS, can, displayName, isAdmin, isAttendantOnly, permissionsOn,
   type Permission, type Principal,
 } from "../auth/permissions.js";
 import type { Sessions } from "../auth/sessions.js";
@@ -243,14 +243,26 @@ export const startServer = (deps: ServerDeps): http.Server => {
     const p = url.pathname;
 
     // ── páginas ──
-    if (method === "GET" && p === "/") return redirect(res, (await panelPrincipal(req, url)) ? "/admin" : "/login");
+    // Quem só atende vai para /atendimento; quem administra, para o painel.
+    const home = (me: Principal) => (isAttendantOnly(me) ? "/atendimento" : "/admin");
+    if (method === "GET" && p === "/") {
+      const me = await panelPrincipal(req, url);
+      return redirect(res, me ? home(me) : "/login");
+    }
     if (method === "GET" && p === "/login") {
-      if (await panelPrincipal(req, url)) return redirect(res, "/admin");
+      const me = await panelPrincipal(req, url);
+      if (me) return redirect(res, home(me));
       return html(res, page("login.html"));
     }
     if (method === "GET" && p === "/admin") {
-      if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
+      const me = await panelPrincipal(req, url);
+      if (!me) return redirect(res, "/login");
+      if (isAttendantOnly(me)) return redirect(res, "/atendimento");
       return html(res, page("admin.html"));
+    }
+    if (method === "GET" && p === "/atendimento") {
+      if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
+      return html(res, page("atendimento.html"));
     }
     if (method === "GET" && p === "/admin/metrics") {
       if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
@@ -402,6 +414,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
           transcriptionAvailable: transcriptionConfigured(),
           username: me.kind === "user" ? me.username : undefined,
           isAdmin: isAdmin(me),
+          attendantOnly: isAttendantOnly(me),
           permissionLabels: PERMISSION_LABELS,
           permissions: PERMISSIONS,
         });

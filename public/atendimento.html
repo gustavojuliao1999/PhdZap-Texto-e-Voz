@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atendimento · WhatsApp</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/chat.css">
+<style>
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; background: #0b141a; overflow: hidden; }
+  .topbar {
+    display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 56px; flex: none;
+    background: #202c33; border-bottom: 1px solid #222d34; color: #e9edef;
+  }
+  .topbar h1 { font-size: 16px; white-space: nowrap; }
+  .lines { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .lines span { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #aebac1; background: rgba(255,255,255,.05); border-radius: 12px; padding: 3px 10px; white-space: nowrap; }
+  .lines span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8696a0; }
+  .lines span.open::before { background: #25d366; }
+  .lines span.down::before { background: #f15c6d; }
+  .topbar .me { color: #aebac1; font-size: 13px; white-space: nowrap; }
+  .topbar a, .topbar button { font-size: 13px; }
+  .topbar a { color: #aebac1; text-decoration: none; white-space: nowrap; }
+  .topbar a:hover { color: #fff; }
+  #callBtn { background: #00a884; color: #fff; border-radius: 18px; padding: 7px 14px; }
+  #alertBtn { background: transparent; border: 1px solid #3b4a54; color: #e9edef; border-radius: 18px; padding: 6px 12px; }
+  .desk { flex: 1; min-height: 0; padding: 0; }
+  .desk .wa { height: 100%; min-height: 0; border-radius: 0; border: 0; }
+  .empty-desk { color: #8696a0; text-align: center; padding: 80px 24px; line-height: 1.7; }
+
+  /* telefone flutuante (receptores e discador) */
+  .phone {
+    position: fixed; right: 18px; bottom: 18px; z-index: 50; width: 360px; max-width: calc(100vw - 24px);
+    background: #111b21; border: 1px solid #2a3942; border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .phone.ringing { animation: ring 1.2s infinite; border-color: #f5a524; }
+  .phone-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #202c33; color: #e9edef; font-size: 14px; font-weight: 600; }
+  .phone-head .sp { flex: 1; }
+  .phone-head button { background: none; color: #aebac1; padding: 2px 8px; font-size: 16px; }
+  .phone-head select { width: auto; max-width: 190px; padding: 4px 8px; font-size: 13px; background: #2a3942; border: 0; color: #e9edef; }
+  .phone iframe { width: 100%; height: 470px; border: 0; display: block; background: #111b21; }
+  .phone .frame-title { font-size: 12px; color: #8696a0; padding: 6px 12px 0; }
+  @media (max-width: 760px) { .phone { right: 8px; bottom: 8px; } .phone iframe { height: 420px; } .topbar .me, .lines { display: none; } }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>💬 Atendimento</h1>
+  <div class="lines" id="lines"></div>
+  <button id="alertBtn" hidden title="Avisos do sistema com som, mesmo com a aba em segundo plano">🔔 Ativar alertas</button>
+  <button id="callBtn" hidden>📞 Ligar</button>
+  <span class="me" id="me"></span>
+  <a href="/admin" id="panelLink" hidden>Painel</a>
+  <button class="ghost small" id="logoutBtn">Sair</button>
+</header>
+<main class="desk" id="desk"></main>
+
+<!-- Telefone: um receptor por número (toca aqui) e o discador do número escolhido. -->
+<div class="phone" id="phone" hidden>
+  <div class="phone-head">
+    <span id="phoneTitle">Ligações</span><span class="sp"></span>
+    <select id="dialLine" title="Ligar pelo número" hidden></select>
+    <button id="phoneClose" title="Fechar">✕</button>
+  </div>
+  <div id="receivers"></div>
+  <div id="dialerBox" hidden><iframe id="dialerFrame" allow="microphone; autoplay" title="Discador"></iframe></div>
+</div>
+
+<script type="module">
+import { esc, fmtPhone } from "/static/voice.js";
+import { $, api, toast, loadMe, logout } from "/static/admin.js";
+import { mountChat, preview } from "/static/chat.js";
+
+let me = null;
+let lines = [];            // todos os números visíveis (com permissões)
+const STATUS = { open: "conectado", qr: "sem telefone", connecting: "conectando", error: "erro", stopped: "parado" };
+const msgLines = () => lines.filter((l) => l.permissions.includes("messages"));
+const recvLines = () => lines.filter((l) => l.permissions.includes("receive"));
+const dialLines = () => lines.filter((l) => l.permissions.includes("dial"));
+const lineLabel = (l) => l.name || (l.phone ? fmtPhone(l.phone) : "Número");
+
+// ─── chat de todos os números ───────────────────────────────────────────
+let chat = null;
+const mountDesk = () => {
+  if (chat || !msgLines().length) {
+    if (!msgLines().length) $("desk").innerHTML = `<div class="empty-desk">Você ainda não tem acesso às mensagens de nenhum número.<br>Peça a um administrador para incluir você num grupo com a permissão <b>Mensagens</b>.</div>`;
+    return;
+  }
+  chat = mountChat($("desk"), {
+    lines: () => msgLines().map((l) => ({ id: l.id, name: lineLabel(l), phone: l.phone })),
+    me: () => me,
+    canCall: (lineId) => !!lines.find((l) => l.id === lineId)?.permissions.includes("dial"),
+    onCall: (number, lineId) => openDialer(lineId, number),
+    onUnread: (n) => { document.title = n ? `(${n}) Atendimento · WhatsApp` : "Atendimento · WhatsApp"; },
+  });
+  chat.activate();
+};
+
+const renderLines = () => {
+  $("lines").innerHTML = lines.map((l) => `<span class="${l.status === "open" ? "open" : l.status === "connecting" ? "" : "down"}" title="${esc(STATUS[l.status] ?? l.status)}">${esc(lineLabel(l))}</span>`).join("");
+  for (const l of msgLines()) chat?.setOnline(l.status === "open", l.id);
+  $("callBtn").hidden = !dialLines().length;
+};
+
+// ─── telefone flutuante ─────────────────────────────────────────────────
+const ringing = new Map();   // lineId -> ligação tocando
+let inCall = null;           // lineId da ligação desta aba (atendida ou feita)
+let dialerOpen = false;
+
+const agentQ = () => (me?.kind === "super" ? `&agent=${encodeURIComponent("Super admin")}` : "");
+const mountReceivers = () => {
+  const have = new Set([...$("receivers").children].map((d) => d.dataset.line));
+  for (const l of recvLines()) {
+    if (have.has(l.id)) continue;
+    const d = document.createElement("div");
+    d.dataset.line = l.id;
+    d.hidden = true;
+    d.innerHTML = `<div class="frame-title">${esc(lineLabel(l))}</div><iframe allow="microphone; autoplay" title="Receber ligações de ${esc(lineLabel(l))}"
+      src="/embed/receiver?line=${encodeURIComponent(l.id)}${agentQ()}"></iframe>`;
+    $("receivers").append(d);
+  }
+  for (const d of [...$("receivers").children]) if (!recvLines().some((l) => l.id === d.dataset.line)) d.remove();
+};
+
+const syncPhone = () => {
+  for (const d of $("receivers").children) d.hidden = !(ringing.has(d.dataset.line) || inCall === d.dataset.line);
+  $("dialerBox").hidden = !dialerOpen;
+  const anyRecv = [...$("receivers").children].some((d) => !d.hidden);
+  $("phone").hidden = !anyRecv && !dialerOpen;
+  $("phone").classList.toggle("ringing", ringing.size > 0 && !inCall);
+  $("dialLine").hidden = !dialerOpen || dialLines().length < 2;
+  const r = [...ringing.values()][0];
+  $("phoneTitle").textContent = inCall ? "Em ligação" : r ? `📞 ${r.pushName || fmtPhone(r.remote)} ligando` : "Ligar";
+  $("phoneClose").hidden = !!inCall || ringing.size > 0;
+};
+
+const openDialer = (lineId, number = "") => {
+  const allowed = dialLines();
+  if (!allowed.length) return toast("Você não tem permissão para ligar");
+  if (inCall) return toast("Termine a ligação atual antes de fazer outra");
+  const line = allowed.find((l) => l.id === lineId) ?? allowed[0];
+  $("dialLine").innerHTML = allowed.map((l) => `<option value="${esc(l.id)}">${esc(lineLabel(l))}</option>`).join("");
+  $("dialLine").value = line.id;
+  $("dialerFrame").src = `/embed/dialer?line=${encodeURIComponent(line.id)}${number ? `&number=${encodeURIComponent(number)}` : ""}${agentQ()}`;
+  dialerOpen = true;
+  syncPhone();
+};
+$("dialLine").onchange = () => openDialer($("dialLine").value);
+$("callBtn").onclick = () => (dialerOpen ? (dialerOpen = false, syncPhone()) : openDialer());
+$("phoneClose").onclick = () => { dialerOpen = false; $("dialerFrame").src = "about:blank"; syncPhone(); };
+
+// Eventos dos iframes (desta aba): atendeu, conectou, encerrou.
+window.addEventListener("message", (e) => {
+  if (e.origin !== location.origin || e.data?.source !== "whatsapp-voice-gateway") return;
+  const { type, call } = e.data;
+  if (type === "answered" || type === "dialing" || type === "connected") inCall = call.lineId;
+  if (type === "ended") { inCall = null; if (call.direction === "outgoing") setTimeout(() => { dialerOpen = false; syncPhone(); }, 2500); }
+  syncPhone();
+});
+
+// ─── som e alertas ──────────────────────────────────────────────────────
+// Um clique ou tecla em qualquer lugar libera o som dos iframes (allow="autoplay").
+const unlockFrames = () => { for (const f of document.querySelectorAll("iframe")) f.contentWindow?.postMessage({ type: "wvg-unlock-audio" }, location.origin); };
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, unlockFrames, true);
+const canNotify = "Notification" in window;
+const syncAlertBtn = () => { $("alertBtn").hidden = !canNotify || Notification.permission !== "default"; };
+$("alertBtn").onclick = async () => { await Notification.requestPermission(); syncAlertBtn(); };
+const away = () => document.hidden || !document.hasFocus();
+const notify = (title, body, tag, onClick, sticky = false) => {
+  if (!canNotify || Notification.permission !== "granted") return null;
+  const n = new Notification(title, { body, tag, renotify: true, requireInteraction: sticky, icon: "/static/icon.svg" });
+  n.onclick = () => { window.focus(); n.close(); onClick?.(); };
+  return n;
+};
+const callNotes = new Map();
+
+// ─── eventos ao vivo ────────────────────────────────────────────────────
+const lineById = (id) => lines.find((l) => l.id === id);
+const onEvent = (e) => {
+  if (e.type === "lines") { lines = e.lines; renderLines(); mountDesk(); mountReceivers(); chat?.activate(); return; }
+  if (e.type === "line-admin") {
+    const i = lines.findIndex((l) => l.id === e.line.id);
+    if (i >= 0) lines[i] = e.line; else lines.push(e.line);
+    renderLines(); mountReceivers(); chat?.activate();
+    return;
+  }
+  if (e.type === "line-removed") { lines = lines.filter((l) => l.id !== e.lineId); renderLines(); mountReceivers(); chat?.activate(); return; }
+  const l = lineById(e.lineId);
+  if (!l) return;
+  if (e.type === "incoming" && l.permissions.includes("receive")) {
+    ringing.set(e.lineId, e.call);
+    if (away()) callNotes.set(e.call.id, notify(`📞 ${e.call.pushName || fmtPhone(e.call.remote)} está ligando`, `Para ${lineLabel(l)}`, `call-${e.call.id}`, null, true));
+  }
+  if (["answered", "connected", "ended"].includes(e.type) && e.call) {
+    if (ringing.get(e.lineId)?.id === e.call.id) ringing.delete(e.lineId);
+    callNotes.get(e.call.id)?.close();
+  }
+  if (e.type === "message" && e.message?.direction === "incoming" && e.message.type !== "reaction" && l.permissions.includes("messages")) {
+    if (away() || !chat?.isOpen(e.lineId, e.message.remote)) {
+      const m = e.message;
+      if (away()) notify(`💬 ${m.pushName || chat?.nameOf(m.remote, e.lineId) || fmtPhone(m.remote)}`, `${preview(m)}${msgLines().length > 1 ? ` · ${lineLabel(l)}` : ""}`, `msg-${e.lineId}-${m.remote}`, () => chat?.open(m.remote, e.lineId));
+    }
+  }
+  chat?.onEvent(e);
+  syncPhone();
+};
+
+const connect = () => {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/admin/api/events`);
+  ws.onmessage = (ev) => onEvent(JSON.parse(ev.data));
+  ws.onclose = (ev) => { if (ev.code === 4002) location.reload(); else setTimeout(connect, 2000); };
+};
+
+me = await loadMe().catch(() => null);
+if (!me) location.href = "/login";
+$("me").textContent = `${me.kind === "super" ? "👑" : "👤"} ${me.name}`;
+$("panelLink").hidden = !!me.attendantOnly;
+$("logoutBtn").onclick = () => logout();
+syncAlertBtn();
+connect();
+</script>
+</body>
+</html>

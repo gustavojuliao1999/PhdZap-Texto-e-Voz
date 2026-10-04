@@ -40,6 +40,14 @@ export const can = (p: Principal | null | undefined, lineId: string, perm: Permi
 export const permissionsOn = (p: Principal | null | undefined, lineId: string): Permission[] =>
   PERMISSIONS.filter((perm) => can(p, lineId, perm));
 
+/**
+ * Só atende (sem administrar nada): vai direto para /atendimento.
+ * Quem administra algum telefone (conectar, configurar, integrações) usa o painel.
+ */
+export const isAttendantOnly = (p: Principal | null | undefined): boolean =>
+  !!p && p.kind === "user" && !p.isAdmin &&
+  ![...p.lines.values()].some((perms) => perms.has("connection") || perms.has("settings") || perms.has("integrations"));
+
 export const displayName = (p: Principal): string =>
   p.kind === "super" ? p.name : p.kind === "user" ? p.name : "API";
 

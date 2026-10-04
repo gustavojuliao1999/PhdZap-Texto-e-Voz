@@ -120,16 +120,28 @@ const initials = (name) => {
 // ─── componente ─────────────────────────────────────────────────────────
 
 /**
- * Monta o chat em `root`.
- * opts: { lineId, me: { id, name, kind }, canCall: () => bool, onCall: (numero) => void, onUnread: (conversasNãoLidas) => void }
- * Retorna { activate(), onEvent(evento), setOnline(bool) }.
+ * Monta o chat em `root`. Um ou vários números (linhas) na mesma caixa de entrada.
+ * opts: {
+ *   lines: [{ id, name, phone }] (ou função que retorna a lista) — ou `lineId` para um número só,
+ *   me: { id, name, kind } (ou função), canCall: (lineId) => bool, onCall: (numero, lineId) => void,
+ *   onUnread: (conversasNãoLidas) => void,
+ * }
+ * Cada conversa é identificada por linha + contato (o mesmo cliente pode falar com dois números).
  */
-export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => false, onCall = () => {}, onUnread = () => {} }) => {
-  const q = `line=${encodeURIComponent(lineId)}`;
+export const mountChat = (root, { lineId, lines: linesOpt, me: meOpt = null, canCall = () => false, onCall = () => {}, onUnread = () => {} }) => {
+  const linesList = () => (typeof linesOpt === "function" ? linesOpt() : linesOpt) ?? (lineId ? [{ id: lineId }] : []);
+  const multi = () => linesList().length > 1;
+  const lineName = (id) => { const l = linesList().find((x) => x.id === id); return l?.name ?? (l?.phone ? fmtPhone(l.phone) : "Número"); };
+  const SEP = "~";
+  const keyOf = (line, remote) => `${line}${SEP}${remote}`;
+  const kOf = (x) => keyOf(x.lineId, x.remote);
+  const lineOf = (key) => String(key).slice(0, String(key).indexOf(SEP));
+  const remoteOf = (key) => String(key).slice(String(key).indexOf(SEP) + 1);
+  const qs = (line) => `line=${encodeURIComponent(line)}`;
   /** Usuário logado ({ id, name, kind }); pode chegar depois da montagem. */
   const who = () => (typeof meOpt === "function" ? meOpt() : meOpt);
-  const vapi = async (method, path, body) => {
-    const res = await fetch(`/api/v1${path}${path.includes("?") ? "&" : "?"}${q}`, {
+  const vapi = async (method, path, body, line) => {
+    const res = await fetch(`/api/v1${path}${path.includes("?") ? "&" : "?"}${qs(line)}`, {
       method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined,
     });
     if (res.status === 401) { location.href = "/login"; throw new Error("Sessão expirada"); }
@@ -137,9 +149,9 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     if (!res.ok) throw new Error(data.error ?? `Erro ${res.status}`);
     return data;
   };
-  const mediaSrc = (m) => `/api/v1/messages/${encodeURIComponent(m.id)}/media?${q}`;
-  const photoSrc = (remote, jid) =>
-    `/api/v1/contacts/${encodeURIComponent(remote)}/photo?${q}${jid ? `&jid=${encodeURIComponent(jid)}` : ""}`;
+  const mediaSrc = (m) => `/api/v1/messages/${encodeURIComponent(m.id)}/media?${qs(m.lineId)}`;
+  const photoSrc = (key, jid) =>
+    `/api/v1/contacts/${encodeURIComponent(remoteOf(key))}/photo?${qs(lineOf(key))}${jid ? `&jid=${encodeURIComponent(jid)}` : ""}`;
 
   /** @type {{remote:string, remoteJid?:string, name?:string, unread:number, last:any}[]} */
   let chats = [];
@@ -147,15 +159,21 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
   const convs = new Map();
   let active = null;
   let replyTo = null;
-  let online = true;
-  let loaded = false;
+  /** lineId -> conectado? */
+  const online = new Map();
+  const isOnline = (line) => online.get(line) !== false;
+  /** Filtro de número na lista ("" = todos). */
+  let lineFilter = "";
+  /** Números cujas conversas já foram carregadas. */
+  const loadedLines = new Set();
   let filter = "";
   let tmpSeq = 0;
   /** Aba da lista: open (abertas e aguardando) | mine | unassigned | resolved. */
   let listFilter = "open";
-  let agents = [];
-  let quickReplies = [];
-  /** remote -> ligações com o contato (para a linha do tempo). */
+  /** lineId -> atendentes / respostas rápidas daquele número. */
+  const agents = new Map();
+  const quickReplies = new Map();
+  /** chave da conversa -> ligações com o contato (para a linha do tempo). */
   const callsOf = new Map();
 
   root.innerHTML = `
@@ -166,10 +184,12 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
         <button class="wa-ico" data-a="new" title="Nova conversa">${ICON.plus}</button>
       </div>
       <form class="wa-new" hidden>
+        <select name="line" class="wa-new-line" title="Enviar pelo número"></select>
         <input name="num" inputmode="tel" placeholder="Número com DDI e DDD (ex.: 5581999999999)" autocomplete="off">
         <button type="submit">Abrir</button>
       </form>
       <div class="wa-search"><input type="search" placeholder="Pesquisar conversa"></div>
+      <div class="wa-linebar" hidden><select class="wa-linesel" title="Número"></select></div>
       <div class="wa-filters">
         <button data-f="open" class="on">Abertas</button>
         <button data-f="mine">Minhas</button>
@@ -184,7 +204,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
           <div style="font-size:64px">💬</div>
           <h2>Mensagens do WhatsApp</h2>
           <div>Escolha uma conversa ao lado ou comece uma nova com o <b>+</b>.<br>
-          Envie textos, áudios, fotos, vídeos, documentos e figurinhas pelo número desta linha.</div>
+          Envie textos, áudios, fotos, vídeos, documentos e figurinhas pelo WhatsApp da empresa.</div>
         </div>
       </div>
       <div class="wa-chat" hidden style="display:contents">
@@ -252,20 +272,28 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
   const noPhoto = new Set();
   root.addEventListener("error", (e) => {
     if (!e.target.matches?.(".wa-av img")) return;
-    noPhoto.add(e.target.dataset.remote);
+    noPhoto.add(e.target.dataset.key);
     e.target.remove();
   }, true);
 
-  const chatOf = (remote) => chats.find((c) => c.remote === remote);
+  const chatOf = (key) => chats.find((c) => c.key === key);
   const isGroup = (remote) => String(remote).endsWith("@g.us");
-  const nameOf = (remote) => {
-    const c = chatOf(remote);
+  const nameOf = (key) => {
+    const c = chatOf(key);
+    const remote = remoteOf(key);
     return c?.name || c?.profileName || (isGroup(remote) ? "Grupo" : remote.includes("@") ? "Contato" : fmtPhone(remote));
   };
-  const avatar = (remote, cls = "") => {
-    const c = chatOf(remote);
-    const img = noPhoto.has(remote) ? "" : `<img alt="" loading="lazy" data-remote="${esc(remote)}" src="${photoSrc(remote, c?.remoteJid)}">`;
-    return `<div class="wa-av ${cls}">${isGroup(remote) ? "👥" : esc(initials(c?.name || c?.profileName))}${img}</div>`;
+  const avatar = (key, cls = "") => {
+    const c = chatOf(key);
+    const img = noPhoto.has(key) ? "" : `<img alt="" loading="lazy" data-key="${esc(key)}" src="${photoSrc(key, c?.remoteJid)}">`;
+    return `<div class="wa-av ${cls}">${isGroup(key) ? "👥" : esc(initials(c?.name || c?.profileName))}${img}</div>`;
+  };
+  /** Cria (se preciso) a conversa na lista. */
+  const ensureChat = (line, remote, extra = {}) => {
+    const key = keyOf(line, remote);
+    let c = chatOf(key);
+    if (!c) { c = { key, lineId: line, remote, unread: 0, last: null, status: "open", isGroup: isGroup(remote), ...extra }; chats.unshift(c); }
+    return c;
   };
   /** Cor estável por pessoa (nomes nos grupos). */
   const hue = (s) => { let h = 0; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
@@ -273,19 +301,19 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   // ─── lista ────────────────────────────────────────────────────────────
 
-  const renderList = () => {
+  let renderList = () => {
     onUnread(chats.reduce((n, c) => n + (c.unread ? 1 : 0), 0));
     const f = filter.trim().toLowerCase();
     const byTab = (c) => {
       const st = c.status ?? "open";
       if (listFilter === "resolved") return st === "resolved";
-      if (st === "resolved") return c.remote === active;
+      if (st === "resolved") return c.key === active;
       if (listFilter === "mine") return !!who()?.id && c.assignedUserId === who().id;
       if (listFilter === "unassigned") return !c.assignedUserId;
       return true;
     };
-    const shown = chats.filter((c) => (f
-      ? (nameOf(c.remote).toLowerCase().includes(f) || c.remote.includes(f.replace(/\D/g, "") || "§"))
+    const shown = chats.filter((c) => (!lineFilter || c.lineId === lineFilter) && (f
+      ? (nameOf(c.key).toLowerCase().includes(f) || c.remote.includes(f.replace(/\D/g, "") || "§"))
       : byTab(c)));
     for (const b of root.querySelectorAll(".wa-filters button")) b.classList.toggle("on", !f && b.dataset.f === listFilter);
     if (!shown.length) {
@@ -296,10 +324,11 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     list.innerHTML = shown.map((c) => {
       const m = c.last;
       const mine = m?.direction === "outgoing";
-      return `<div class="wa-item${c.remote === active ? " active" : ""}" data-remote="${esc(c.remote)}">
-        ${avatar(c.remote)}
+      return `<div class="wa-item${c.key === active ? " active" : ""}" data-key="${esc(c.key)}">
+        ${avatar(c.key)}
         <div class="wa-item-main">
-          <div class="wa-item-top"><span class="wa-name">${esc(nameOf(c.remote))}</span>
+          <div class="wa-item-top"><span class="wa-name">${esc(nameOf(c.key))}</span>
+            ${multi() ? `<span class="wa-line" title="Número da empresa">${esc(lineName(c.lineId))}</span>` : ""}
             <span class="wa-time${c.unread ? " unread" : ""}">${m ? fmtListTime(m.timestamp) : ""}</span></div>
           <div class="wa-item-bot"><span class="wa-prev">${mine ? tick(m.status) : ""}${m?.deletedAt ? "🚫 Mensagem apagada" : esc((isGroup(c.remote) && m?.participantName ? `${m.participantName}: ` : "") + preview(m))}</span>
             ${c.status === "pending" ? `<span class="wa-who" title="Aguardando cliente">⏳</span>` : ""}
@@ -310,8 +339,8 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
   };
 
   const touchChat = (m) => {
-    let c = chatOf(m.remote);
-    if (!c) { c = { remote: m.remote, remoteJid: m.remoteJid, unread: 0, last: null, status: "open", isGroup: isGroup(m.remote) }; chats.push(c); }
+    let c = chatOf(kOf(m));
+    if (!c) { c = { key: kOf(m), lineId: m.lineId, remote: m.remote, remoteJid: m.remoteJid, unread: 0, last: null, status: "open", isGroup: isGroup(m.remote) }; chats.push(c); }
     if (m.pushName) {
       // Nome definido pela equipe tem prioridade sobre o do perfil.
       if (!c.name || c.name === c.profileName) c.name = m.pushName;
@@ -325,14 +354,14 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   // ─── conversa ─────────────────────────────────────────────────────────
 
-  const conv = (remote) => {
-    let c = convs.get(remote);
-    if (!c) convs.set(remote, (c = { list: [], hasMore: true, loading: false, loaded: false }));
+  const conv = (key) => {
+    let c = convs.get(key);
+    if (!c) convs.set(key, (c = { list: [], hasMore: true, loading: false, loaded: false }));
     return c;
   };
 
   const upsert = (m) => {
-    const c = conv(m.remote);
+    const c = conv(kOf(m));
     const i = c.list.findIndex((x) => x.id === m.id);
     if (i >= 0) c.list[i] = { ...c.list[i], ...m };
     else {
@@ -341,11 +370,11 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     }
   };
 
-  const findMsg = (remote, id) => convs.get(remote)?.list.find((m) => m.id === id);
+  const findMsg = (key, id) => convs.get(key)?.list.find((m) => m.id === id);
 
   const quoteHtml = (m, targetId, cls = "") => {
-    const t = targetId ? findMsg(m?.remote ?? active, targetId) : m;
-    const who = !t ? "" : t.direction === "outgoing" ? "Você" : nameOf(t.remote);
+    const t = targetId ? findMsg(m ? kOf(m) : active, targetId) : m;
+    const who = !t ? "" : t.direction === "outgoing" ? "Você" : nameOf(kOf(t));
     return `<div class="wa-quote ${t?.direction === "incoming" ? "in" : ""} ${cls}" data-jump="${esc(targetId ?? t?.id ?? "")}">
       <b>${esc(who || "Mensagem")}</b><span>${esc(t ? preview(t) : "Mensagem anterior")}</span></div>`;
   };
@@ -371,7 +400,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
         const ptt = m.media?.ptt;
         const b = bars(m.id).map((h) => `<i style="height:${h}%"></i>`).join("");
         const av = ptt
-          ? `<div class="wa-audio-av">${m.direction === "outgoing" ? `<div class="wa-av">🎧</div>` : avatar(m.remote)}<span class="mic">🎤</span></div>`
+          ? `<div class="wa-audio-av">${m.direction === "outgoing" ? `<div class="wa-av">🎧</div>` : avatar(kOf(m))}<span class="mic">🎤</span></div>`
           : `<div class="wa-audio-av">🎵</div>`;
         return `<div class="wa-audio${ptt ? "" : " file"}" data-audio="${esc(m.id)}" data-src="${local ? "" : src}">
           ${m.direction === "outgoing" ? "" : av}
@@ -457,7 +486,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
             <button data-a="reply" title="Responder">${ICON.reply}</button>
           </div>`}
         </div>
-        ${r?.size ? `<div class="wa-reacts" title="${esc([...r].map(([d, e]) => `${d === "outgoing" ? "Você" : nameOf(m.remote)}: ${e}`).join("\n"))}">${[...new Set(r.values())].map((e) => `<span>${e}</span>`).join("")}${r.size > 1 ? `<small>&nbsp;${r.size}</small>` : ""}</div>` : ""}
+        ${r?.size ? `<div class="wa-reacts" title="${esc([...r].map(([d, e]) => `${d === "outgoing" ? "Você" : nameOf(kOf(m))}: ${e}`).join("\n"))}">${[...new Set(r.values())].map((e) => `<span>${e}</span>`).join("")}${r.size > 1 ? `<small>&nbsp;${r.size}</small>` : ""}</div>` : ""}
       </div>`;
     }
     box.innerHTML = html || `<div class="wa-day">Nenhuma mensagem ainda. Diga oi! 👋</div>`;
@@ -472,7 +501,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     const icon = answered ? (incoming ? "📞" : "📲") : "📵";
     const what = answered ? (incoming ? "Ligação recebida" : "Ligação feita") : (incoming ? "Ligação perdida" : "Ligação não atendida");
     const dur = answered && call.endedAt ? fmtDur((new Date(call.endedAt) - new Date(call.connectedAt)) / 1000) : "";
-    const rec = call.hasRecording ? `<div class="wa-audio file" data-audio="call-${esc(call.id)}" data-src="/api/v1/calls/${encodeURIComponent(call.id)}/recording?${q}">
+    const rec = call.hasRecording ? `<div class="wa-audio file" data-audio="call-${esc(call.id)}" data-src="/api/v1/calls/${encodeURIComponent(call.id)}/recording?${qs(call.lineId ?? lineOf(active))}">
         <button class="wa-play" data-a="play">${ICON.play}</button>
         <div class="wa-wave"><div class="wa-bars">${bars(call.id).map((h) => `<i style="height:${h}%"></i>`).join("")}</div>
           <div class="wa-audio-meta"><span class="cur">${fmtDur(call.recordingSeconds)}</span></div></div></div>` : "";
@@ -484,15 +513,17 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   // ─── atendimento (responsável, situação, dados do contato) ────────────
 
-  const patchContact = async (remote, patch) => {
+  const patchContact = async (key, patch) => {
     try {
-      const c = await vapi("PATCH", `/contacts/${encodeURIComponent(remote)}`, patch);
-      applyContact(c);
+      const c = await vapi("PATCH", `/contacts/${encodeURIComponent(remoteOf(key))}`, patch, lineOf(key));
+      applyContact({ ...c, lineId: lineOf(key) });
     } catch (err) { toast(err.message); renderHead(); }
   };
 
+  /** `ct` precisa trazer o lineId (os eventos e respostas da API trazem só o contato). */
   const applyContact = (ct) => {
-    const c = chatOf(ct.remote);
+    const key = keyOf(ct.lineId, ct.remote);
+    const c = chatOf(key);
     if (c) {
       const profile = c.profileName;
       Object.assign(c, { status: ct.status, assignedUserId: ct.assignedUserId, assignedName: ct.assignedName, notes: ct.notes });
@@ -500,7 +531,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
       c.customName = ct.name ?? null;
     }
     renderList();
-    if (ct.remote === active) renderHead();
+    if (key === active) renderHead();
   };
 
   const renderHead = () => {
@@ -508,7 +539,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     if (!c) return;
     el(".wa-head .who b").textContent = nameOf(active);
     const sel = el(".wa-assign");
-    const opts = [...agents];
+    const opts = [...(agents.get(c.lineId) ?? [])];
     if (c.assignedUserId && !opts.some((a) => a.id === c.assignedUserId)) opts.push({ id: c.assignedUserId, name: c.assignedName ?? "?" });
     sel.innerHTML = `<option value="">Sem responsável</option>` + opts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join("");
     sel.value = c.assignedUserId ?? "";
@@ -524,20 +555,21 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     const name = el(".wa-f-name"), notes = el(".wa-f-notes");
     if (document.activeElement !== name) { name.value = c.customName ?? ""; name.placeholder = c.profileName || "Nome"; }
     if (document.activeElement !== notes) notes.value = c.notes ?? "";
-    el(".wa-info-sub").textContent = isGroup(active) ? "Grupo do WhatsApp" : `${fmtPhone(active)}${c.profileName ? ` · perfil: ${c.profileName}` : ""}`;
+    el(".wa-info-sub").textContent = (isGroup(active) ? "Grupo do WhatsApp" : `${fmtPhone(remoteOf(active))}${c.profileName ? ` · perfil: ${c.profileName}` : ""}`)
+      + (multi() ? ` · número: ${lineName(c.lineId)}` : "");
     const calls = callsOf.get(active) ?? [];
     el(".wa-info-calls").innerHTML = calls.length
       ? calls.slice().reverse().slice(0, 20).map((call) => `<div class="wa-info-call">${fmtDay(call.startedAt)} ${fmtTime(call.startedAt)} — ${callHtml(call)}</div>`).join("")
       : `<div class="wa-info-empty">Nenhuma ligação com este contato.</div>`;
   };
 
-  const loadContact = async (remote) => {
+  const loadContact = async (key) => {
     try {
-      const ct = await vapi("GET", `/contacts/${encodeURIComponent(remote)}`);
-      callsOf.set(remote, (ct.calls ?? []).slice().reverse());
-      if (!chatOf(remote)) chats.unshift({ remote, unread: 0, last: null });
-      applyContact(ct);
-      if (remote === active) renderMessages(true);
+      const ct = await vapi("GET", `/contacts/${encodeURIComponent(remoteOf(key))}`, undefined, lineOf(key));
+      callsOf.set(key, (ct.calls ?? []).slice().reverse());
+      ensureChat(lineOf(key), remoteOf(key));
+      applyContact({ ...ct, lineId: lineOf(key) });
+      if (key === active) renderMessages(true);
     } catch (err) { toast(err.message); }
   };
 
@@ -548,10 +580,10 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     const c = convs.get(active);
     if (!c || c.loading || !c.hasMore) return;
     c.loading = true;
-    const remote = active;
+    const key = active;
     try {
       const oldest = c.list[0]?.timestamp;
-      const page = await vapi("GET", `/messages?contact=${encodeURIComponent(remote)}&limit=${PAGE}${oldest ? `&before=${encodeURIComponent(oldest)}` : ""}`);
+      const page = await vapi("GET", `/messages?contact=${encodeURIComponent(remoteOf(key))}&limit=${PAGE}${oldest ? `&before=${encodeURIComponent(oldest)}` : ""}`, undefined, lineOf(key));
       page.forEach(upsert);
       c.hasMore = page.length === PAGE;
       c.loaded = true;
@@ -560,25 +592,28 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     } finally {
       c.loading = false;
     }
-    if (active === remote) renderMessages(true);
+    if (active === key) renderMessages(true);
   };
 
-  const openChat = async (remote) => {
-    if (!remote) return;
-    active = remote;
+  const openChat = async (key) => {
+    if (!key) return;
+    active = key;
+    const remote = remoteOf(key), line = lineOf(key);
     replyTo = null;
     el(".wa-reply").hidden = true;
     wa.classList.add("show-chat");
     el(".wa-placeholder").hidden = true;
     el(".wa-chat").hidden = false;
-    el(".wa-head-av").outerHTML = avatar(remote, "small wa-head-av");
-    el(".wa-head .who b").textContent = nameOf(remote);
-    el(".wa-head .who small").textContent = isGroup(remote) ? "Grupo" : remote.includes("@") ? "" : fmtPhone(remote);
-    el('[data-a="call"]').hidden = !canCall() || remote.includes("@");
+    el(".wa-head-av").outerHTML = avatar(key, "small wa-head-av");
+    el(".wa-head .who b").textContent = nameOf(key);
+    el(".wa-head .who small").textContent = (isGroup(remote) ? "Grupo" : remote.includes("@") ? "" : fmtPhone(remote))
+      + (multi() ? ` · via ${lineName(line)}` : "");
+    el('[data-a="call"]').hidden = !canCall(line) || remote.includes("@");
+    syncOnline();
     renderList();
     renderHead();
-    void loadContact(remote);
-    const c = conv(remote);
+    void loadContact(key);
+    const c = conv(key);
     if (!c.loaded) { c.list = c.list.filter((m) => m.pending); c.hasMore = true; await loadOlder(); }
     renderMessages();
     scrollBottom();
@@ -594,7 +629,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
       if (!c?.unread || document.visibilityState !== "visible" || !root.offsetParent) return;
       c.unread = 0;
       renderList();
-      vapi("POST", `/chats/${encodeURIComponent(c.remote)}/read`).catch(() => {});
+      vapi("POST", `/chats/${encodeURIComponent(c.remote)}/read`, undefined, c.lineId).catch(() => {});
     }, 400);
   };
   document.addEventListener("visibilitychange", markRead);
@@ -603,34 +638,35 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   /** Envia; `quoted` = mensagem citada (por padrão, a da barra "respondendo"). */
   const send = async (body, optimistic, quoted) => {
-    const remote = active;
-    if (!online) return toast("Telefone desconectado");
+    const key = active;
+    const line = lineOf(key), remote = remoteOf(key);
+    if (!isOnline(line)) return toast("Este número está desconectado");
     const isReaction = optimistic.type === "reaction";
     if (!isReaction) { quoted = replyTo; replyTo = null; el(".wa-reply").hidden = true; }
     const tmp = {
-      id: `tmp-${++tmpSeq}`, remote, direction: "outgoing", status: "pending", pending: true,
+      id: `tmp-${++tmpSeq}`, lineId: line, remote, direction: "outgoing", status: "pending", pending: true,
       timestamp: new Date().toISOString(), replyTo: quoted?.id, ...optimistic,
     };
     if (quoted) body.replyTo = quoted.id;
     if (!isReaction) { upsert(tmp); renderMessages(); scrollBottom(); }
     try {
-      const m = await vapi("POST", "/messages", { to: remote, ...body });
-      const c = conv(remote);
+      const m = await vapi("POST", "/messages", { to: remote, ...body }, line);
+      const c = conv(key);
       c.list = c.list.filter((x) => x.id !== tmp.id);
       if (m.remote !== remote) {
         // O WhatsApp registrou o número com/sem o 9º dígito: a conversa passa a usar o número dele.
-        const from = convs.get(remote);
-        convs.delete(remote);
-        convs.set(m.remote, from);
-        chats = chats.filter((x) => x.remote !== remote || x.last);
-        if (active === remote) active = m.remote;
+        const newKey = keyOf(line, m.remote);
+        convs.delete(key);
+        convs.set(newKey, c);
+        chats = chats.filter((x) => x.key !== key || x.last);
+        if (active === key) active = newKey;
       }
       upsert(m);
       touchChat(m);
     } catch (err) {
-      const c = conv(remote);
+      const c = conv(key);
       if (isReaction) c.list = c.list.filter((x) => !(x.id.startsWith("tmp-r-") && x.replyTo === quoted?.id));
-      const t = findMsg(remote, tmp.id);
+      const t = findMsg(key, tmp.id);
       if (t) { t.status = "error"; t.pending = false; }
       toast(`Não enviada: ${err.message}`);
     }
@@ -711,7 +747,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   let rec = null;
   const startRec = async () => {
-    if (!online) return toast("Telefone desconectado");
+    if (!isOnline(lineOf(active))) return toast("Este número está desconectado");
     if (!navigator.mediaDevices?.getUserMedia) return toast("O navegador não permite gravar aqui (use HTTPS ou localhost)");
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
@@ -810,7 +846,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
       const emoji = b.dataset.react === mine ? "" : b.dataset.react;
       const target = findMsg(active, id);
       // Otimista: aparece na hora; o servidor confirma pelo evento.
-      upsert({ id: `tmp-r-${++tmpSeq}`, remote: active, direction: "outgoing", type: "reaction", text: emoji, replyTo: id, timestamp: new Date().toISOString(), status: "pending" });
+      upsert({ id: `tmp-r-${++tmpSeq}`, lineId: lineOf(active), remote: remoteOf(active), direction: "outgoing", type: "reaction", text: emoji, replyTo: id, timestamp: new Date().toISOString(), status: "pending" });
       renderMessages(true);
       send({ type: "reaction", text: emoji }, { type: "reaction" }, target);
     };
@@ -820,7 +856,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   list.onclick = (ev) => {
     const item = ev.target.closest(".wa-item");
-    if (item) openChat(item.dataset.remote);
+    if (item) openChat(item.dataset.key);
   };
   el(".wa-search input").oninput = (ev) => { filter = ev.target.value; renderList(); };
   el(".wa-filters").onclick = (ev) => {
@@ -839,9 +875,10 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
   let qrIndex = 0;
   const qrMatches = () => {
     const m = /^\/([\p{L}\p{N}_-]*)$/u.exec(input.value);
-    if (!m || !quickReplies.length) return null;
+    const list = quickReplies.get(lineOf(active)) ?? [];
+    if (!m || !list.length) return null;
     const term = m[1].toLowerCase();
-    return quickReplies.filter((r) => r.shortcut.startsWith(term) || r.text.toLowerCase().includes(term)).slice(0, 8);
+    return list.filter((r) => r.shortcut.startsWith(term) || r.text.toLowerCase().includes(term)).slice(0, 8);
   };
   const renderQr = () => {
     const pop = el(".wa-qr");
@@ -869,8 +906,9 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
     if (num.length < 10) return toast("Informe o número com DDI e DDD, ex.: 5581999999999");
     ev.target.hidden = true;
     ev.target.num.value = "";
-    if (!chatOf(num)) chats.unshift({ remote: num, unread: 0, last: null });
-    openChat(num);
+    const line = ev.target.line.value || linesList()[0]?.id;
+    ensureChat(line, num);
+    openChat(keyOf(line, num));
   };
 
   input.addEventListener("input", () => { autosize(); qrIndex = 0; renderQr(); });
@@ -925,7 +963,7 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
       return;
     }
     const open = t.closest("[data-open]");
-    if (open) { if (!chatOf(open.dataset.open)) chats.unshift({ remote: open.dataset.open, unread: 0, last: null }); openChat(open.dataset.open); return; }
+    if (open) { ensureChat(lineOf(active), open.dataset.open); openChat(keyOf(lineOf(active), open.dataset.open)); return; }
     const bar = t.closest(".wa-bars");
     if (bar) {
       const a = bar.closest(".wa-audio");
@@ -938,9 +976,19 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
     const a = t.closest("[data-a]")?.dataset.a;
     switch (a) {
-      case "new": { const f = el(".wa-new"); f.hidden = !f.hidden; if (!f.hidden) f.num.focus(); break; }
+      case "new": {
+        const f = el(".wa-new");
+        f.hidden = !f.hidden;
+        if (!f.hidden) {
+          f.line.innerHTML = linesList().map((l) => `<option value="${esc(l.id)}">${esc(lineName(l.id))}</option>`).join("");
+          if (lineFilter) f.line.value = lineFilter;
+          f.line.hidden = !multi();
+          f.num.focus();
+        }
+        break;
+      }
       case "back": wa.classList.remove("show-chat"); active = null; renderList(); break;
-      case "call": onCall(active); break;
+      case "call": onCall(remoteOf(active), lineOf(active)); break;
       case "down": scrollBottom(); break;
       case "emoji": el(".wa-emoji").hidden = !el(".wa-emoji").hidden; break;
       case "attach": el(".wa-attach").hidden = !el(".wa-attach").hidden; break;
@@ -977,85 +1025,121 @@ export const mountChat = (root, { lineId, me: meOpt = null, canCall = () => fals
 
   // ─── API pública ──────────────────────────────────────────────────────
 
+  // ─── números (linhas) ─────────────────────────────────────────────────
+
+  const sel = el(".wa-linesel");
+  /** Atualiza o seletor de número (só aparece com mais de um). */
+  const renderLineBar = () => {
+    el(".wa-linebar").hidden = !multi();
+    if (!multi()) { lineFilter = ""; return; }
+    const unreadBy = new Map();
+    for (const c of chats) if (c.unread) unreadBy.set(c.lineId, (unreadBy.get(c.lineId) ?? 0) + 1);
+    const total = [...unreadBy.values()].reduce((a, b) => a + b, 0);
+    const label = (txt, n) => (n ? `${txt} (${n})` : txt);
+    sel.innerHTML = `<option value="">${esc(label("Todos os números", total))}</option>`
+      + linesList().map((l) => `<option value="${esc(l.id)}">${esc(label(`${lineName(l.id)}${isOnline(l.id) ? "" : " · desconectado"}`, unreadBy.get(l.id)))}</option>`).join("");
+    sel.value = lineFilter;
+  };
+  sel.onchange = () => { lineFilter = sel.value; renderList(); };
+  const baseRenderList = renderList;
+  renderList = () => { baseRenderList(); renderLineBar(); };
+
+  /** Composer liberado conforme o número da conversa aberta estar conectado. */
+  const syncOnline = () => {
+    const ok = !active || isOnline(lineOf(active));
+    el(".wa-offline").hidden = ok;
+    el(".wa-offline").textContent = `${multi() && active ? `${lineName(lineOf(active))}: ` : ""}telefone desconectado, não é possível enviar mensagens agora.`;
+    input.disabled = !ok;
+  };
+
+  const loadLine = async (line) => {
+    const [list, ag, qr] = await Promise.all([
+      vapi("GET", "/chats", undefined, line),
+      vapi("GET", "/agents", undefined, line).catch(() => []),
+      vapi("GET", "/quick-replies", undefined, line).catch(() => []),
+    ]);
+    agents.set(line, ag);
+    quickReplies.set(line, qr);
+    chats = chats.filter((c) => c.lineId !== line).concat(list.map((c) => ({
+      ...c, lineId: line, key: keyOf(line, c.remote), customName: c.name !== c.profileName ? c.name : null,
+    })));
+    chats.sort((a, b) => (b.last?.timestamp ?? "").localeCompare(a.last?.timestamp ?? ""));
+  };
+
   return {
-    /** Abre a conversa com um contato. */
-    open: (remote) => openChat(remote),
-    /** Contato da conversa aberta (null se nenhuma). */
-    get active() { return active; },
+    /** Abre a conversa com um contato (no número `line`; padrão: o primeiro). */
+    open: (remote, line = linesList()[0]?.id) => { ensureChat(line, remote); openChat(keyOf(line, remote)); },
+    /** A conversa (linha + contato) está aberta? */
+    isOpen: (line, remote) => active === keyOf(line, remote),
     /** Nome a mostrar para um contato. */
-    nameOf: (remote) => nameOf(remote),
-    /** Carrega as conversas na primeira vez que a aba abre. */
+    nameOf: (remote, line = linesList()[0]?.id) => nameOf(keyOf(line, remote)),
+    /** Carrega as conversas de todos os números (na primeira vez ou quando a lista muda). */
     activate: async () => {
       if (active) markRead();
-      if (loaded) return;
-      loaded = true;
-      try {
-        [chats, agents, quickReplies] = await Promise.all([
-          vapi("GET", "/chats"),
-          vapi("GET", "/agents").catch(() => []),
-          vapi("GET", "/quick-replies").catch(() => []),
-        ]);
-        for (const c of chats) c.customName = c.name !== c.profileName ? c.name : null;
-      } catch (err) {
-        loaded = false;
-        toast(err.message);
-      }
+      const want = linesList().map((l) => l.id);
+      const missing = want.filter((id) => !loadedLines.has(id));
+      // Número removido da lista (permissão mudou): some da caixa de entrada.
+      chats = chats.filter((c) => want.includes(c.lineId));
+      for (const id of [...loadedLines]) if (!want.includes(id)) loadedLines.delete(id);
+      if (!missing.length) { renderList(); return; }
+      missing.forEach((id) => loadedLines.add(id));
+      const results = await Promise.allSettled(missing.map(loadLine));
+      results.forEach((r, i) => { if (r.status === "rejected") { loadedLines.delete(missing[i]); toast(r.reason?.message ?? String(r.reason)); } });
       renderList();
     },
-    setOnline: (v) => {
-      online = v;
-      el(".wa-offline").hidden = v;
-      input.disabled = !v;
+    /** Número conectado ou não (bloqueia o envio nas conversas dele). */
+    setOnline: (v, line = linesList()[0]?.id) => {
+      online.set(line, !!v);
+      syncOnline();
+      renderLineBar();
     },
     /** Recarrega as respostas rápidas (depois de editar nas configurações). */
-    reloadQuickReplies: async () => { quickReplies = await vapi("GET", "/quick-replies").catch(() => quickReplies); },
+    reloadQuickReplies: async () => {
+      for (const l of linesList()) quickReplies.set(l.id, await vapi("GET", "/quick-replies", undefined, l.id).catch(() => quickReplies.get(l.id) ?? []));
+    },
     onEvent: (e) => {
-      if (e.type === "contact") { applyContact(e.contact); return; }
-      if (e.type === "ended" && e.call) {
-        // Ligação terminou: entra na linha do tempo da conversa (se carregada).
-        const list = callsOf.get(e.call.remote);
-        if (list) {
-          const i = list.findIndex((x) => x.id === e.call.id);
-          if (i >= 0) list[i] = e.call; else list.push(e.call);
-          if (e.call.remote === active) { renderMessages(true); if (!el(".wa-info").hidden) renderInfo(); }
-        }
-        return;
-      }
-      if (e.type === "call-update" && e.call) {
-        const list = callsOf.get(e.call.remote);
-        const i = list?.findIndex((x) => x.id === e.call.id) ?? -1;
-        if (i >= 0) { list[i] = { ...list[i], ...e.call }; if (e.call.remote === active) { renderMessages(true); if (!el(".wa-info").hidden) renderInfo(); } }
+      if (e.lineId && !linesList().some((l) => l.id === e.lineId)) return;
+      if (e.type === "contact") { applyContact({ ...e.contact, lineId: e.lineId }); return; }
+      if ((e.type === "ended" || e.type === "call-update") && e.call) {
+        // Ligação terminou (ou gravação/transcrição ficou pronta): entra na linha do tempo da conversa.
+        const key = keyOf(e.lineId, e.call.remote);
+        const list = callsOf.get(key);
+        if (!list) return;
+        const i = list.findIndex((x) => x.id === e.call.id);
+        if (i >= 0) list[i] = { ...list[i], ...e.call }; else if (e.type === "ended") list.push(e.call);
+        if (key === active) { renderMessages(true); if (!el(".wa-info").hidden) renderInfo(); }
         return;
       }
       if (e.type === "chat-read") {
-        const c = chatOf(e.remote);
+        const c = chatOf(keyOf(e.lineId, e.remote));
         if (c) { c.unread = 0; renderList(); }
         return;
       }
-      const m = e.message;
-      if (!m) return;
+      if (!e.message) return;
+      const m = { ...e.message, lineId: e.message.lineId ?? e.lineId };
+      const key = kOf(m);
       if (e.type === "message-status") {
-        const known = findMsg(m.remote, m.id);
+        const known = findMsg(key, m.id);
         if (known) known.status = m.status;
-        const c = chatOf(m.remote);
+        const c = chatOf(key);
         if (c?.last?.id === m.id) c.last.status = m.status;
       } else if (e.type === "message-update") {
-        if (findMsg(m.remote, m.id)) upsert(m);
-        const c = chatOf(m.remote);
+        if (findMsg(key, m.id)) upsert(m);
+        const c = chatOf(key);
         if (c?.last?.id === m.id) c.last = { ...c.last, ...m };
       } else {
-        const c = convs.get(m.remote);
+        const c = convs.get(key);
         // Reação que nós mesmos enviamos: troca a otimista pela real.
         if (c && m.type === "reaction" && m.direction === "outgoing") c.list = c.list.filter((x) => !(x.id.startsWith("tmp-r-") && x.replyTo === m.replyTo));
-        if (c?.loaded || m.remote === active) upsert(m);
+        if (c?.loaded || key === active) upsert(m);
         const chat = touchChat(m);
         if (m.direction === "incoming" && m.type !== "reaction" && m.status === "delivered") {
           chat.unread += 1;
-          if (m.remote === active) markRead();
+          if (key === active) markRead();
         }
       }
       renderList();
-      if (m.remote === active) {
+      if (key === active) {
         const stick = nearBottom() || m.direction === "outgoing";
         renderMessages(true);
         if (stick) scrollBottom();

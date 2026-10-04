@@ -888,7 +888,7 @@ const onAlertEvent = (e) => {
   }
   if (e.type === "message" && has("messages")) {
     const m = e.message;
-    const looking = !away() && location.hash === "#mensagens" && chat.active === m.remote;
+    const looking = !away() && location.hash === "#mensagens" && chat.isOpen(e.lineId, m.remote);
     if (m.direction === "incoming" && m.type !== "reaction" && !looking) {
       alertUser(`💬 ${m.pushName || chat.nameOf(m.remote)}`, preview(m), {
         tag: `msg-${m.remote}`, onClick: () => { location.hash = "#mensagens"; chat.open(m.remote); },

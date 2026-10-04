@@ -61,6 +61,7 @@ export const renderNav = (me, active) => {
   if (!nav) return;
   const link = (href, label, key) => `<a href="${href}" class="${active === key ? "active" : ""}">${label}</a>`;
   nav.innerHTML = `
+    ${link("/atendimento", "Atendimento", "desk")}
     ${link("/admin", "Telefones", "lines")}
     ${link("/admin/metrics", "Métricas", "metrics")}
     ${me.isAdmin ? link("/admin/users", "Usuários e grupos", "users") : ""}
