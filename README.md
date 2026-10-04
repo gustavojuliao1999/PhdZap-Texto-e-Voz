@@ -97,9 +97,8 @@ No painel, abra **Incorporar** na linha e copie os códigos:
 
 - `agent` é o nome do atendente. Ele aparece para os outros atendentes ("Atendida por Maria") e no histórico.
 - `allow="microphone; camera; display-capture; autoplay"`: `microphone` e `autoplay` são obrigatórios;
-  `camera` e `display-capture` servem para ligar com vídeo (câmera ou tela). Os navegadores só liberam microfone em **HTTPS**
-  (ou localhost), então publique o gateway atrás de um proxy HTTPS (Caddy, nginx, Cloudflare Tunnel)
-  e use `SECURE_COOKIES=true`.
+  `camera` e `display-capture` servem para ligar com vídeo (câmera ou tela). O gateway **e o site que
+  incorpora** precisam estar em HTTPS (veja [HTTPS](#https)).
 - Em **Configurar › Sites que podem incorporar**, restrinja quais domínios podem usar a linha.
   Isso vale para o `frame-ancestors` dos iframes e para a origem nas chamadas à API.
 - O som do toque só funciona depois de uma interação com o iframe (política de autoplay). O
@@ -296,20 +295,50 @@ grandes. Uma pessoa em vários grupos soma os acessos.
 
 ## Produção
 
-**HTTPS** (Caddy com certificado automático): aponte o DNS do domínio para o servidor, libere as
-portas 80/443 e, no `.env`:
+### HTTPS
+
+O gateway fala HTTP na porta 3000 e **não cuida de certificado**. Fora do `localhost`, ponha-o atrás
+de um proxy reverso com HTTPS (nginx, Caddy, Traefik, Cloudflare Tunnel, o balanceador da sua nuvem…).
+A configuração do proxy é por sua conta; o que ele precisa garantir:
+
+**Por que é obrigatório:** os navegadores só liberam **microfone, câmera e compartilhamento de tela**
+em páginas HTTPS (ou `localhost`). Sem HTTPS não dá para atender nem ligar pelo painel, pelo
+`/atendimento`, pelos iframes ou pelo SDK, nem fazer ligação com vídeo. E o login, os cookies de
+sessão, os tokens das linhas e a `ADMIN_API_KEY` trafegariam em texto puro.
+
+**O que precisa estar em HTTPS:**
+
+| O quê | Endereço |
+|---|---|
+| Painel, `/atendimento`, `/login`, `/docs` | `https://SEU_GATEWAY/…` |
+| Iframes (`/embed/receiver`, `/embed/dialer`) e o SDK (`/sdk.js`) | `https://SEU_GATEWAY/…` |
+| **O site que incorpora** os iframes ou o SDK | a página-mãe também em HTTPS: numa página HTTP o navegador bloqueia o microfone do iframe |
+| WebSockets (eventos, áudio e vídeo das ligações) | `wss://SEU_GATEWAY/api/v1/events`, `/api/v1/media`, `/api/v1/video-up`, `/admin/api/events` |
+| API (`/api/v1/*`, `/admin/api/*`) | recomendado (tokens no cabeçalho) |
+| A URL do **seu** webhook | recomendado (`https://…`), o corpo leva mensagens e números |
+
+**O que o proxy precisa fazer:**
+
+- Encaminhar tudo para `http://127.0.0.1:3000`, mantendo o `Host` e enviando `X-Forwarded-Proto: https`
+  (os links da documentação e o `frame-ancestors` usam) e `X-Forwarded-For` (IP na auditoria).
+- **Repassar WebSocket** (`Upgrade` / `Connection: upgrade`) e não derrubar conexões paradas por menos
+  de 60 s (o gateway manda `ping` a cada 25 s; uma ligação pode durar horas).
+- **Não bufferizar** respostas longas: o vídeo do cliente (`/api/v1/calls/:id/video`) é um fluxo MJPEG
+  contínuo e o áudio das gravações usa `Range`.
+- Aceitar corpos de até **36 MB** (envio de mídia em base64 até 25 MB).
+- Redirecionar `http://` para `https://`.
+
+**No `.env`:**
 
 ```bash
-DOMAIN=voz.suaempresa.com.br
-PUBLIC_URL=https://voz.suaempresa.com.br
-SECURE_COOKIES=true
-TRUST_PROXY=true
-APP_BIND=127.0.0.1          # a porta 3000 fica só para o Caddy
+PUBLIC_URL=https://voz.suaempresa.com.br   # links de mídia no webhook e da documentação
+SECURE_COOKIES=true                        # cookie de sessão só em HTTPS
+TRUST_PROXY=true                           # IP real do cliente (X-Forwarded-For)
+APP_BIND=127.0.0.1                         # porta 3000 só para o proxy (se ele estiver no mesmo servidor)
 ```
 
-```bash
-docker compose --profile https up -d
-```
+Depois: `docker compose up -d`. Teste abrindo `https://SEU_GATEWAY/atendimento` e fazendo uma ligação:
+o navegador precisa pedir o microfone.
 
 **Backup** do banco e das sessões do WhatsApp (guarda em `./backups`, apaga os de mais de 14 dias):
 

@@ -59,28 +59,9 @@ services:
       # Sessões do WhatsApp de cada telefone (não perca este volume!)
       - appdata:/data
     ports:
-      # Com HTTPS (perfil "https"), use APP_BIND=127.0.0.1 para só o Caddy acessar.
+      # Atrás de um proxy HTTPS no mesmo servidor, use APP_BIND=127.0.0.1 (só o proxy acessa).
       - "${APP_BIND:-0.0.0.0}:${APP_PORT:-3000}:3000"
-
-  # HTTPS automático: DOMAIN=voz.suaempresa.com.br docker compose --profile https up -d
-  caddy:
-    image: caddy:2-alpine
-    profiles: ["https"]
-    restart: unless-stopped
-    depends_on: [app]
-    environment:
-      DOMAIN: ${DOMAIN:-localhost}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
 
 volumes:
   pgdata:
   appdata:
-  caddy_data:
-  caddy_config:
