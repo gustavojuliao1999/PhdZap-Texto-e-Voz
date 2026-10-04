@@ -13,6 +13,8 @@ export type CallPolicy = {
   maxCallDurationMs: number;
   /** Contato oculto: o gateway não atende nem recusa (só o celular toca). */
   isHidden?: (remote: string) => boolean;
+  /** Chamadas de vídeo recebidas: atender só com áudio, mostrar o vídeo ou recusar. */
+  videoCalls?: "audio" | "video" | "reject";
 };
 
 export type GatewayEvent =
@@ -86,6 +88,11 @@ export class CallManager extends EventEmitter {
     this.#emit({ type: "incoming", call: session.record });
     if (this.cfg.isHidden?.(remote)) {
       log.info(`[${call.callId}] contato oculto: fica só no celular`);
+      return;
+    }
+    if (info.isVideo && this.cfg.videoCalls === "reject") {
+      log.info(`[${call.callId}] chamada de vídeo recusada (configuração do telefone)`);
+      call.reject();
       return;
     }
 

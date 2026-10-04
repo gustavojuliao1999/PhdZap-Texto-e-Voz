@@ -210,6 +210,40 @@ describe("gateway (integração)", { skip: !BASE_URL && "defina TEST_DATABASE_UR
     assert.ok((await (await line("GET", "/chats")).json()).some((c: any) => c.remote === hid));
   });
 
+  it("chamada de vídeo: mostra o vídeo do cliente em MJPEG e encerra com a ligação", async () => {
+    await admin("PATCH", `/lines/${lineId}`, { videoCalls: "video" });
+    const t = new Date().toISOString();
+    const call = { id: "CV1", direction: "incoming", remote: "5581222220000", status: "ringing", startedAt: t, isVideo: true };
+    await emit({ type: "incoming", call });
+    const cur = await until(async () => (await (await line("GET", "/line")).json()).current);
+    assert.equal(cur.isVideo, true);
+    assert.equal(cur.videoStream, true);
+    const jpeg = Buffer.from([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]);
+    await emit({ t: "video", callId: "CV1", jpegBase64: jpeg.toString("base64") });
+    const res = await line("GET", "/calls/CV1/video");
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /multipart\/x-mixed-replace/);
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    const text = Buffer.from(value!).toString("latin1");
+    assert.ok(text.includes("--quadro") && text.includes("image/jpeg"));
+    // A ligação acaba: o fluxo fecha.
+    await emit({ type: "ended", call: { ...call, status: "ended", endedAt: t } });
+    for (;;) { const r = await reader.read(); if (r.done) break; }
+    assert.equal((await line("GET", "/calls/CV1/video")).status, 404);
+    await admin("PATCH", `/lines/${lineId}`, { videoCalls: "audio" });
+  });
+
+  it("chamada de vídeo sem a opção de vídeo: não abre o fluxo", async () => {
+    const t = new Date().toISOString();
+    await emit({ type: "incoming", call: { id: "CV2", direction: "incoming", remote: "5581222220000", status: "ringing", startedAt: t, isVideo: true } });
+    const cur = await until(async () => (await (await line("GET", "/line")).json()).current);
+    assert.equal(cur.videoStream, undefined);
+    assert.equal((await line("GET", "/calls/CV2/video")).status, 404);
+    await emit({ type: "ended", call: { id: "CV2", direction: "incoming", remote: "5581222220000", status: "ended", startedAt: t, endedAt: t } });
+    assert.equal((await admin("PATCH", `/lines/${lineId}`, { videoCalls: "talvez" })).status, 400);
+  });
+
   it("auditoria registra as alterações sem segredos", async () => {
     await admin("PATCH", `/lines/${lineId}`, { webhookSecret: "super-secreto" });
     const rows = await (await admin("GET", "/audit?action=line.update")).json();

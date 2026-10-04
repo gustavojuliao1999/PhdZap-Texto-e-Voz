@@ -23,6 +23,8 @@
   .actions { display: flex; gap: 10px; width: 100%; max-width: 320px; }
   .actions button { flex: 1; padding: 12px; font-size: 15px; }
   .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 320px; font-size: 12px; color: var(--muted); }
+  .video { width: 100%; max-width: 360px; max-height: 46vh; object-fit: contain; border-radius: 12px; background: #000; border: 2px solid var(--green); }
+  .tag-video { color: var(--blue); font-size: 13px; font-weight: 600; }
   .soundbar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; font-size: 12.5px; background: rgba(245,165,36,.12); color: var(--amber); }
   .soundbar button { padding: 4px 10px; font-size: 12px; }
 </style>
@@ -38,7 +40,7 @@
 
 <script type="module">
 import {
-  api, connectEvents, notifyParent, ringtone, autoUnlockSound, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc,
+  api, connectEvents, notifyParent, ringtone, autoUnlockSound, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc, authedUrl,
 } from "/static/voice.js";
 
 const $ = (id) => document.getElementById(id);
@@ -89,6 +91,7 @@ const render = () => {
   if (call && mine()) {
     stage.classList.add(call.status === "connected" ? "incall" : "ringing");
     stage.innerHTML = `<div class="avatar">👤</div>${who(call)}
+      ${call.isVideo ? `<div class="tag-video">📹 Chamada de vídeo${call.videoStream ? " · sua câmera está desligada" : " · atendida só com áudio"}</div>` : ""}
       <div class="timer" id="timer">${call.status === "connected" ? fmtDuration(call.connectedAt) : "conectando…"}</div>
       <div class="meters">
         <div>Você<div class="meter"><div id="micLevel" style="width:${levels.mic * 100}%"></div></div></div>
@@ -100,13 +103,22 @@ const render = () => {
       </div>`;
     $("muteBtn").onclick = () => { audio.setMuted(!audio.muted); api("POST", `/calls/${call.id}/mute`, { muted: audio.muted }).catch(() => {}); render(); };
     $("hangupBtn").onclick = act(async () => { await api("POST", `/calls/${call.id}/hangup`); });
+    // Vídeo do cliente: o mesmo <img> é reaproveitado entre renderizações (não reabre o fluxo).
+    if (call.videoStream && call.status === "connected") {
+      if (videoEl?.dataset.call !== call.id) {
+        videoEl = Object.assign(document.createElement("img"), { className: "video", alt: "Vídeo do cliente" });
+        videoEl.dataset.call = call.id;
+        videoEl.src = authedUrl(`/api/v1/calls/${encodeURIComponent(call.id)}/video`);
+      }
+      stage.querySelector(".avatar").replaceWith(videoEl);
+    }
     return;
   }
   if (isIncomingRinging()) {
     stage.classList.add("ringing");
     const isIgnored = ignored.has(call.id);
     stage.innerHTML = `<div class="avatar">📞</div>${who(call)}
-      <div class="sub">${isIgnored ? "Você ignorou esta ligação" : "Ligação recebida"}</div>
+      <div class="sub">${isIgnored ? "Você ignorou esta ligação" : call.isVideo ? "📹 Chamada de vídeo recebida" : "Ligação recebida"}</div>
       <div class="actions">
         <button class="green" id="answerBtn">Atender</button>
         ${isIgnored ? "" : `<button class="ghost" id="ignoreBtn">Ignorar</button>`}
@@ -127,6 +139,8 @@ const render = () => {
     <div class="sub">${endedInfo ?? "Aguardando ligações…"}</div>
     ${agentName ? `<div class="sub">Atendente: ${esc(agentName)}</div>` : ""}`;
 };
+
+let videoEl = null;
 
 const act = (fn) => async () => {
   if (busy) return;

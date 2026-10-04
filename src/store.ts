@@ -4,7 +4,7 @@ import path from "node:path";
 import { Prisma, type Call, type Contact, type Line, type Message, type PrismaClient, type QuickReply } from "@prisma/client";
 import type { CallView, MessageView } from "./line-manager.js";
 import { log } from "./log.js";
-import type { ContactRecord, HandlerName, LineConfig, MessageRecord, MessageStatus } from "./worker/protocol.js";
+import { VIDEO_CALL_MODES, type ContactRecord, type HandlerName, type LineConfig, type MessageRecord, type MessageStatus } from "./worker/protocol.js";
 
 export const newLineToken = (): string => `wvl_${randomBytes(24).toString("base64url")}`;
 export const newAdminKey = (): string => `wva_${randomBytes(24).toString("base64url")}`;
@@ -44,6 +44,7 @@ const toConfig = (l: Line): LineConfig => ({
   transcribeCalls: l.transcribeCalls,
   transcribeVoiceNotes: l.transcribeVoiceNotes,
   hiddenContacts: l.hiddenContacts,
+  videoCalls: (VIDEO_CALL_MODES as readonly string[]).includes(l.videoCalls) ? (l.videoCalls as LineConfig["videoCalls"]) : "audio",
 });
 
 const fromConfig = (c: LineConfig) => ({
@@ -69,6 +70,7 @@ const fromConfig = (c: LineConfig) => ({
   transcribeCalls: c.transcribeCalls,
   transcribeVoiceNotes: c.transcribeVoiceNotes,
   hiddenContacts: c.hiddenContacts,
+  videoCalls: c.videoCalls,
 });
 
 const toView = (c: Call): CallView => ({
@@ -217,6 +219,7 @@ export class Store {
     transcribeCalls: false,
     transcribeVoiceNotes: false,
     hiddenContacts: [],
+    videoCalls: "audio",
   });
 
   insertLine = async (c: LineConfig): Promise<void> => {

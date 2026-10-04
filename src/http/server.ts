@@ -170,6 +170,7 @@ const lineView = (line: LineRuntime, p: Principal) => {
       recordCalls: c.recordCalls,
       transcribeCalls: c.transcribeCalls,
       transcribeVoiceNotes: c.transcribeVoiceNotes,
+      videoCalls: c.videoCalls,
     } : {}),
     // Contatos ocultos: só administradores sabem quais são.
     ...(isAdmin(p) ? { hiddenContacts: c.hiddenContacts } : {}),
@@ -662,6 +663,34 @@ export const startServer = (deps: ServerDeps): http.Server => {
         const call = await store.getCall(lineId, decodeURIComponent(parts[1]));
         if (!call?.recordingFile || line.isHidden(call.remote)) throw new HttpError(404, "Ligação sem gravação");
         return sendFile(req, res, lines.lineFile(lineId, call.recordingFile), "audio/ogg", `ligacao-${call.remote}-${call.startedAt.toISOString().slice(0, 16).replace(/[:T]/g, "-")}.ogg`);
+      }
+
+      // Vídeo do cliente (chamada de vídeo atendida com "mostrar o vídeo"): MJPEG para um <img>.
+      if (parts[0] === "calls" && parts.length === 3 && parts[2] === "video" && method === "GET") {
+        const call = line.current;
+        if (!call || call.id !== decodeURIComponent(parts[1]) || !call.videoStream) throw new HttpError(404, "Chamada de vídeo não encontrada ou já encerrada");
+        if (!(principal.kind === "user" && call.ownerUserId === principal.id)) requirePerm(principal, lineId, "receive");
+        const callId = call.id;
+        res.writeHead(200, {
+          "content-type": "multipart/x-mixed-replace; boundary=quadro",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        });
+        const write = (jpeg: Buffer) => {
+          // Cliente lento: descarta quadros em vez de acumular.
+          if (res.writableLength > 2 * 1024 * 1024) return;
+          res.write(`--quadro\r\ncontent-type: image/jpeg\r\ncontent-length: ${jpeg.length}\r\n\r\n`);
+          res.write(jpeg);
+          res.write("\r\n");
+        };
+        const first = line.lastVideo.get(callId);
+        if (first) write(first);
+        const onVideo = (lid: string, cid: string, jpeg: Buffer) => { if (lid === lineId && cid === callId) write(jpeg); };
+        const onEvent = (e: LineEvent) => { if (e.type === "ended" && e.lineId === lineId && e.call.id === callId) res.end(); };
+        lines.on("video", onVideo);
+        lines.on("event", onEvent);
+        res.on("close", () => { lines.off("video", onVideo); lines.off("event", onEvent); });
+        return;
       }
 
       if (parts[0] === "calls" && parts.length === 3 && method === "POST") {

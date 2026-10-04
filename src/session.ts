@@ -12,6 +12,8 @@ export type CallRecord = {
   remote: string;
   remoteJid?: string;
   pushName?: string;
+  /** Chamada de vídeo (recebida). */
+  isVideo?: boolean;
   status: CallStatus;
   handler?: string;
   startedAt: string;
@@ -39,6 +41,7 @@ export class CallSession extends EventEmitter {
       remote,
       remoteJid,
       pushName,
+      ...(call.incoming?.isVideo ? { isVideo: true } : {}),
       status: "ringing",
       startedAt: new Date().toISOString(),
     };

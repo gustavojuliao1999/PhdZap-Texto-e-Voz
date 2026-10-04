@@ -143,6 +143,8 @@ O mesmo arquivo abre no Insomnia, no Bruno e no Hoppscotch.
 | `remote` | string | Número do outro lado (dígitos) ou o JID quando o número não é conhecido. |
 | `remoteJid` | string? | JID do WhatsApp. |
 | `pushName` | string? | Nome do perfil do contato (recebidas). |
+| `isVideo` | boolean? | Chamada de vídeo recebida. |
+| `videoStream` | boolean? | O vídeo do cliente pode ser visto em [`GET /api/v1/calls/:id/video`](#get-apiv1callsidvideo--vídeo-do-cliente). |
 | `status` | `ringing` \| `connected` \| `ended` | Situação. |
 | `handler` | string? | Quem cuida do áudio. |
 | `startedAt` / `connectedAt` / `endedAt` | data? | Início, atendimento e fim. |
@@ -278,6 +280,21 @@ não encontrado no WhatsApp, `503` linha desconectada.
 
 Arquivo `audio/ogg` (opus, mono) da ligação, com suporte a `Range`. Permissão: `view`. Existe quando a
 linha tem **Gravar as ligações** ligado (`recordCalls`); `404` se não houver gravação.
+
+### `GET /api/v1/calls/:id/video` — vídeo do cliente
+
+Em chamadas de vídeo recebidas, com o telefone configurado para **mostrar o vídeo do cliente**
+(`videoCalls: "video"`), devolve o vídeo do cliente como MJPEG
+(`multipart/x-mixed-replace`), até 10 quadros por segundo. Ponha a URL num `<img>`; o fluxo
+fecha quando a ligação acaba. Permissão: quem está na ligação ou `receive`. Com o token da linha,
+use `?token=`.
+
+```html
+<img src="https://GATEWAY/api/v1/calls/CALL_ID/video?token=TOKEN">
+```
+
+O gateway **nunca envia vídeo**: o cliente vê a câmera do atendente desligada. `404` se a ligação
+não for de vídeo, já tiver acabado ou o telefone estiver configurado para atender só com áudio.
 
 ### `POST /api/v1/calls/:id/accept` — atender
 
@@ -656,6 +673,7 @@ Configurações da linha:
 |---|---|---|
 | `name` | string | 1 a 60 caracteres. |
 | `inboundMode` | `manual` \| `auto` \| `reject` | Toca nos atendentes / bot atende / recusa. |
+| `videoCalls` | `audio` \| `video` \| `reject` | Chamadas de vídeo recebidas: atende só com áudio (padrão) / mostra o vídeo do cliente (a câmera do atendente fica desligada) / recusa. |
 | `handler` | `silence` \| `echo` \| `ws-bridge` | Bot das ligações automáticas e das feitas pela API sem handler. |
 | `inboundAnswerDelayMs` | 0–60000 | Espera antes do atendimento automático. |
 | `maxCallDurationMs` | 0–86400000 | Duração máxima (0 = sem limite). |

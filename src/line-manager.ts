@@ -12,7 +12,7 @@ import { SendLimiter } from "./rate-limit.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
 import {
-  RESTART_EXIT_CODE, type ContactRecord, type GatewayEvent, type LineConfig, type MessageRecord, type MessageStatus,
+  RESTART_EXIT_CODE, VIDEO_CALL_MODES, type ContactRecord, type GatewayEvent, type LineConfig, type MessageRecord, type MessageStatus,
   type OutgoingContent, type WorkerCommand, type WorkerMessage,
 } from "./worker/protocol.js";
 
@@ -39,6 +39,8 @@ export type CallView = CallRecord & {
   hasRecording?: boolean;
   recordingSeconds?: number;
   transcript?: string;
+  /** Chamada de vídeo com o vídeo do cliente disponível em GET /api/v1/calls/:id/video. */
+  videoStream?: boolean;
 };
 
 /** Mensagem como vista pelos clientes. */
@@ -116,6 +118,8 @@ export class LineRuntime extends EventEmitter {
   readonly #recentlyEnded: string[] = [];
   /** Ligações de contatos ocultos: vão para o histórico, mas não para o painel. */
   readonly #hiddenCalls = new Set<string>();
+  /** Último quadro do vídeo do cliente, por ligação (quem abre o vídeo já vê a imagem). */
+  readonly lastVideo = new Map<string, Buffer>();
 
   constructor(public config: LineConfig, private readonly authDir: string) {
     super();
@@ -284,6 +288,11 @@ export class LineRuntime extends EventEmitter {
       case "audio":
         this.emit("audio", msg.callId, Buffer.from(msg.pcm.buffer, msg.pcm.byteOffset, msg.pcm.byteLength));
         return;
+      case "video":
+        if (this.#hiddenCalls.has(msg.callId)) return;
+        this.lastVideo.set(msg.callId, Buffer.from(msg.jpeg.buffer, msg.jpeg.byteOffset, msg.jpeg.byteLength));
+        this.emit("video", msg.callId, this.lastVideo.get(msg.callId));
+        return;
       case "event":
         this.#onCallEvent(msg.event);
         return;
@@ -321,6 +330,7 @@ export class LineRuntime extends EventEmitter {
       ownerClientId: prev?.ownerClientId,
       ownerAgent: prev?.ownerAgent,
       ownerUserId: prev?.ownerUserId,
+      ...(e.call.isVideo && this.config.videoCalls === "video" ? { videoStream: true } : {}),
     };
     if (e.type === "ended") { this.#finishCall(view); return; }
     this.current = view;
@@ -329,6 +339,7 @@ export class LineRuntime extends EventEmitter {
 
   #finishCall = (view: CallView): void => {
     this.current = null;
+    this.lastVideo.delete(view.id);
     this.#recentlyEnded.push(view.id);
     if (this.#recentlyEnded.length > 20) this.#recentlyEnded.shift();
     this.emit("ended-call", view);
@@ -363,6 +374,8 @@ export class LineManager extends EventEmitter {
 
   constructor(private readonly store: Store) {
     super();
+    // Cada vídeo aberto no painel escuta `video` e `event` enquanto a ligação durar.
+    this.setMaxListeners(200);
     this.#limiter = new SendLimiter((lineId) => {
       const midnight = new Date();
       midnight.setHours(0, 0, 0, 0);
@@ -648,6 +661,7 @@ export class LineManager extends EventEmitter {
     line.on("wa", () => this.emit("wa", config.id));
     line.on("crashed", (detail: string) => this.emit("crashed", config.id, detail));
     line.on("audio", (callId: string, pcm: Buffer) => this.emit("audio", config.id, callId, pcm));
+    line.on("video", (callId: string, jpeg: Buffer) => this.emit("video", config.id, callId, jpeg));
     line.on("ended-call", (view: CallView) => {
       this.store.appendCall(view).catch((err) => log.error(`falha ao gravar ligação no histórico: ${err.message}`));
     });
@@ -778,6 +792,10 @@ const sanitizePatch = (p: Partial<LineConfig>): Partial<LineConfig> => {
     out.webhookSecret = sec;
   }
   if (p.hiddenContacts !== undefined) out.hiddenContacts = normalizeHiddenList(p.hiddenContacts);
+  if (p.videoCalls !== undefined) {
+    if (!VIDEO_CALL_MODES.includes(p.videoCalls)) throw new HttpError(400, `videoCalls: use ${VIDEO_CALL_MODES.join(", ")}`);
+    out.videoCalls = p.videoCalls;
+  }
   if (p.webhookEvents !== undefined) {
     if (!Array.isArray(p.webhookEvents)) throw new HttpError(400, "webhookEvents deve ser uma lista");
     for (const ev of p.webhookEvents) {

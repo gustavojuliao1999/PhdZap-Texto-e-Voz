@@ -10,7 +10,13 @@ let fetches = 0;
 http.createServer((req, res) => {
   let b = "";
   req.on("data", (c) => (b += c));
-  req.on("end", () => { send({ t: "event", event: JSON.parse(b) }); res.end("ok"); });
+  req.on("end", () => {
+    const body = JSON.parse(b);
+    // {"t":"video","callId","jpegBase64"} simula um quadro do vídeo do cliente.
+    if (body.t === "video") send({ t: "video", callId: body.callId, jpeg: new Uint8Array(Buffer.from(body.jpegBase64, "base64")) });
+    else send({ t: "event", event: body });
+    res.end("ok");
+  });
 }).listen(Number(process.env.FAKE_CONTROL_PORT), "127.0.0.1");
 process.on("message", (m: any) => {
   if (m.t !== "req") return;

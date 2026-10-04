@@ -9,6 +9,7 @@ import path from "node:path";
 import { VoipClient } from "baileys-caller";
 import { recordCall } from "../audio/recorder.js";
 import { hiddenMatcher } from "../hidden.js";
+import { VideoRelay } from "../video.js";
 import { CallManager } from "../call-manager.js";
 import { floatToPcm16, pcm16ToFloat } from "../audio/pcm.js";
 import { echoHandler, silenceHandler } from "../handlers/echo.js";
@@ -34,6 +35,7 @@ const policy = {
   inboundAnswerDelayMs: line.inboundAnswerDelayMs,
   maxCallDurationMs: line.maxCallDurationMs,
   isHidden: (remote: string) => isHidden(remote),
+  videoCalls: line.videoCalls,
 };
 
 /** Atendimento humano: o áudio vai/vem pelo navegador, via processo principal. */
@@ -82,6 +84,19 @@ whatsapp.on("state", (state) => {
 });
 manager.on("event", (event) => {
   send({ t: "event", event });
+  // Chamada de vídeo com "mostrar o vídeo": os quadros do cliente vão em JPEG para o painel.
+  if (event.type === "incoming" && event.call.isVideo && line.videoCalls === "video") {
+    const session = manager.get(event.call.id);
+    if (session) {
+      const relay = new VideoRelay();
+      relay.on("jpeg", (jpeg: Buffer) => send({ t: "video", callId: session.id, jpeg }));
+      relay.once("jpeg", () => log.info(`[${session.id}] vídeo do cliente chegando`));
+      session.call.on("video", relay.push);
+      session.call.once("video", (f: { width: number; height: number; format: number; orientation: number }) =>
+        log.info(`[${session.id}] primeiro quadro de vídeo: ${f.width}x${f.height} formato ${f.format} rotação ${f.orientation}`));
+      session.once("ended", relay.stop);
+    }
+  }
   // Gravação: começa quando a ligação conecta (se a linha grava).
   if (event.type === "connected" && line.recordCalls) {
     const session = manager.get(event.call.id);
@@ -129,6 +144,7 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
     case "configure": {
       line = c.config;
       isHidden = hiddenMatcher(line.hiddenContacts ?? []);
+      policy.videoCalls = line.videoCalls;
       Object.assign(policy, {
         inboundMode: line.inboundMode,
         inboundAnswerDelayMs: line.inboundAnswerDelayMs,

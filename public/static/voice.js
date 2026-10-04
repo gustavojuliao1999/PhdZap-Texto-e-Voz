@@ -8,6 +8,8 @@ export const lineId = params.get("line") ?? "";
 const authHeaders = () => (lineToken ? { authorization: `Bearer ${lineToken}` } : { "x-line-id": lineId });
 const authQuery = () => (lineToken ? { token: lineToken } : { line: lineId });
 export const agentName = (params.get("agent") ?? "").slice(0, 60);
+/** URL da API com a autenticação na query (para <img>, <audio> e afins). */
+export const authedUrl = (path) => `${path}?${new URLSearchParams(authQuery())}`;
 
 /** Identifica este iframe/aba (o "primeiro a atender" é por cliente). */
 export const clientId = (() => {

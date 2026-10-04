@@ -278,6 +278,9 @@ grandes. Uma pessoa em vários grupos soma os acessos.
   o histórico completo. Conversas que nunca passaram pelo gateway só chegam vinculando de novo.
 - **Contatos:** nomes da agenda do celular e do perfil, com pesquisa por nome e número
   (`GET /api/v1/contacts?q=`).
+- **Chamadas de vídeo recebidas** (opção por telefone): atender só com áudio (padrão), atender
+  mostrando o vídeo do cliente no telefone do painel ou recusar. O gateway nunca envia vídeo: o
+  cliente vê a câmera do atendente desligada.
 - **Contatos ocultos** (administradores): números cujas mensagens e ligações ficam gravadas, mas não
   aparecem no painel, no atendimento, na API nem no webhook; as ligações deles tocam só no celular.
   Configure em Configurações › Contatos ocultos, ou no chat: Dados do contato › Ocultar este contato.
@@ -373,8 +376,8 @@ que são muito verbosos.
 
 - **Uma ligação por linha por vez.** Uma ligação que chega com a linha ocupada não é atendida
   (evento `busy`). Para atender várias ao mesmo tempo, crie mais linhas.
-- Ligações: só voz 1:1, sem vídeo e sem chamadas em grupo (é uma limitação do WhatsApp num aparelho
-  vinculado).
+- Ligações: 1:1 e sem chamadas em grupo. Vídeo só de recebimento: o gateway mostra o vídeo do
+  cliente, mas não transmite câmera, e não faz chamadas de vídeo.
 - Mensagens antigas: vêm do celular, que precisa estar com internet. Conversas que nunca passaram pelo
   gateway só chegam vinculando o telefone de novo (o celular envia o histórico a um vínculo novo).
 - Use um número dedicado por linha. Ligações feitas pelo celular do mesmo número disputam a conta.

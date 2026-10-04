@@ -14,6 +14,7 @@ import { recordCall } from "../src/audio/recorder.js";
 import { parseOutgoing } from "../src/http/messages-api.js";
 import { assertPublicUrl, isPrivateIp } from "../src/net/safe-fetch.js";
 import { SendLimiter } from "../src/rate-limit.js";
+import { VideoRelay } from "../src/video.js";
 import { WebhookDispatcher } from "../src/webhooks.js";
 
 const hasFfmpeg = (() => { try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); return true; } catch { return false; } })();
@@ -183,5 +184,36 @@ describe("contatos ocultos", () => {
   it("variantes para filtrar no banco", () => {
     assert.deepEqual(hiddenRemotes(["5581999990000"]).sort(), ["558199990000", "5581999990000"].sort());
     assert.deepEqual(hiddenRemotes(["14155550000"]), ["14155550000"]);
+  });
+});
+
+describe("vídeo do cliente (VideoRelay)", () => {
+  /** Lê largura x altura do JPEG (marcador SOF0). */
+  const jpegSize = (b: Buffer): [number, number] => {
+    for (let i = 2; i < b.length - 9; i++) if (b[i] === 0xff && b[i + 1] === 0xc0) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+    return [0, 0];
+  };
+  it("converte quadros I420 em JPEG, aplicando a rotação pedida", async () => {
+    const relay = new VideoRelay();
+    const got = new Promise<Buffer>((resolve) => relay.once("jpeg", resolve));
+    const w = 320, h = 240;
+    const data = new Uint8Array(w * h * 1.5).fill(128);
+    const timer = setInterval(() => relay.push({ data, width: w, height: h, format: 1, orientation: 2, timestamp: 0, isKeyFrame: true }), 120);
+    try {
+      const jpeg = await got;
+      assert.equal(jpeg[0], 0xff);
+      assert.equal(jpeg[1], 0xd8);
+      assert.deepEqual(jpegSize(jpeg), [240, 320]); // girado 90°
+    } finally {
+      clearInterval(timer);
+      relay.stop();
+    }
+  });
+  it("ignora formato desconhecido ou quadro incompleto", () => {
+    const relay = new VideoRelay();
+    relay.on("jpeg", () => assert.fail("não deveria gerar imagem"));
+    relay.push({ data: new Uint8Array(10), width: 320, height: 240, format: 1, orientation: 1, timestamp: 0, isKeyFrame: true });
+    relay.push({ data: new Uint8Array(320 * 240 * 4), width: 320, height: 240, format: 100, orientation: 1, timestamp: 0, isKeyFrame: true });
+    relay.stop();
   });
 });

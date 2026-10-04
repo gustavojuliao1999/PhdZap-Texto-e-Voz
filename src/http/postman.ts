@@ -28,6 +28,8 @@ const LINE_API: Folder[] = [
       { name: "Ligar", method: "POST", path: "/api/v1/calls", body: { to: "{{numero}}", handler: "ws-bridge" },
         description: "`handler`: `browser`, `ws-bridge`, `echo` ou `silence`. Com `clientId`, a ligação já nasce sua." },
       { name: "Gravação", method: "GET", path: "/api/v1/calls/{{callId}}/recording" },
+      { name: "Vídeo do cliente (MJPEG)", method: "GET", path: "/api/v1/calls/{{callId}}/video",
+        description: "Chamadas de vídeo com o telefone em `videoCalls: \"video\"`. Melhor abrir num <img> do que no Postman." },
       { name: "Atender", method: "POST", path: "/api/v1/calls/{{callId}}/accept", body: { handler: "ws-bridge", agent: "Postman" } },
       { name: "Recusar", method: "POST", path: "/api/v1/calls/{{callId}}/reject" },
       { name: "Desligar", method: "POST", path: "/api/v1/calls/{{callId}}/hangup" },

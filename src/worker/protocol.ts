@@ -36,7 +36,15 @@ export type LineConfig = CallPolicy & {
   transcribeVoiceNotes: boolean;
   /** Números ocultos (só dígitos): gravados, mas fora do painel, da API e do webhook. */
   hiddenContacts: string[];
+  /**
+   * Chamadas de vídeo recebidas: `audio` atende só com áudio; `video` mostra o vídeo do cliente
+   * no painel (a câmera do atendente fica desligada); `reject` recusa.
+   */
+  videoCalls: VideoCallMode;
 };
+
+export const VIDEO_CALL_MODES = ["audio", "video", "reject"] as const;
+export type VideoCallMode = (typeof VIDEO_CALL_MODES)[number];
 
 export type BusinessHours = Partial<Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", [string, string][]>>;
 
@@ -147,7 +155,9 @@ export type WorkerMessage =
   | { t: "wa"; state: WhatsAppState }
   | { t: "event"; event: GatewayEvent }
   /** Áudio do outro lado (PCM16 16 kHz mono) para chamadas atendidas pelo navegador. */
-  | { t: "audio"; callId: string; pcm: Uint8Array };
+  | { t: "audio"; callId: string; pcm: Uint8Array }
+  /** Quadro do vídeo do cliente (JPEG), em chamadas de vídeo com `videoCalls: "video"`. */
+  | { t: "video"; callId: string; jpeg: Uint8Array };
 
 /** Código de saída que pede ao principal para reiniciar o worker (após logout). */
 export { RESTART_EXIT_CODE } from "../restart.js";

@@ -90,6 +90,8 @@ model Line {
   transcribeVoiceNotes Boolean     @default(false)
   /// Números ocultos (só dígitos): gravados, mas fora do painel, da API e do webhook. Só administradores veem.
   hiddenContacts       String[]    @default([])
+  /// Chamadas de vídeo recebidas: audio (atende só com áudio) | video (mostra o vídeo do cliente) | reject.
+  videoCalls           String      @default("audio")
   groups               GroupLine[]
   calls                Call[]
   messages             Message[]
