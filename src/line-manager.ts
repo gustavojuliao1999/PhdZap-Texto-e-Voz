@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "./log.js";
 import type { CallRecord } from "./session.js";
-import type { Store } from "./store.js";
+import type { ContactView, Store } from "./store.js";
 import { SendLimiter } from "./rate-limit.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
@@ -28,6 +28,10 @@ export type CallView = CallRecord & {
   ownerAgent?: string;
   /** Usuário do painel que ficou com a chamada (quando não foi pelo token). */
   ownerUserId?: string;
+  /** Histórico: há gravação (GET /api/v1/calls/:id/recording) e a transcrição. */
+  hasRecording?: boolean;
+  recordingSeconds?: number;
+  transcript?: string;
 };
 
 /** Mensagem como vista pelos clientes. */
@@ -35,6 +39,10 @@ export type MessageView = MessageRecord & {
   lineId: string;
   /** Quem enviou pelo gateway (usuário do painel ou "API"). */
   agent?: string;
+  editedAt?: string;
+  deletedAt?: string;
+  /** Transcrição (áudio de voz). */
+  transcript?: string;
 };
 
 /** Evento publicado para os WebSockets (de uma linha e do admin) e para o webhook. */
@@ -45,7 +53,16 @@ export type LineEvent =
   | { type: "message-status"; lineId: string; message: MessageView }
   /** Conversa marcada como lida (zera o contador nos outros painéis). */
   | { type: "chat-read"; lineId: string; remote: string }
+  /** Mensagem editada, apagada ou transcrita. */
+  | { type: "message-update"; lineId: string; message: MessageView }
+  /** Dados de atendimento da conversa mudaram (status, responsável, nome, notas). */
+  | { type: "contact"; lineId: string; contact: ContactView }
+  /** Gravação ou transcrição de uma ligação ficou pronta. */
+  | { type: "call-update"; lineId: string; kind: "recording" | "transcript"; call: CallUpdate }
   | { type: "line"; lineId: string; line: LinePublic };
+
+/** Parte da ligação que mudou depois de encerrada. */
+export type CallUpdate = { id: string; remote: string; hasRecording?: boolean; recordingSeconds?: number; transcript?: string };
 
 /** Visão da linha para quem tem só o token da linha (sem QR, sem segredos). */
 export type LinePublic = {
@@ -250,6 +267,8 @@ export class LineRuntime extends EventEmitter {
     }
     // Mensagens: o LineManager grava no banco antes de publicar.
     if (e.type === "message") { this.emit("wa-message", e.message, e.raw); return; }
+    if (e.type === "message-update") { this.emit("wa-message-update", e.id, e); return; }
+    if (e.type === "recording") { this.emit("wa-recording", e.callId, e.file, e.seconds); return; }
     if (e.type === "message-status") { this.emit("wa-message-status", e.id, e.status); return; }
     // Preserva quem atendeu entre atualizações do worker.
     const prev = this.current?.id === e.call.id ? this.current : null;
@@ -441,6 +460,24 @@ export class LineManager extends EventEmitter {
     return url;
   };
 
+  /** Caminho absoluto de um arquivo da linha (gravações). */
+  lineFile = (id: string, file: string): string => path.join(path.dirname(this.store.authDirFor(id)), file);
+
+  /** Liga a gravação à ligação no histórico (que pode ainda estar sendo gravado no banco). */
+  #saveRecording = async (lineId: string, callId: string, file: string, seconds: number): Promise<void> => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const n = await this.store.updateCall(lineId, callId, { recordingFile: file, recordingSeconds: seconds });
+      if (n) {
+        const call = await this.store.getCall(lineId, callId);
+        const update: CallUpdate = { id: callId, remote: call?.remote ?? "", hasRecording: true, recordingSeconds: seconds };
+        this.emit("event", { type: "call-update", lineId, kind: "recording", call: update } satisfies LineEvent);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+    log.warn(`gravação ${file}: ligação ${callId} não encontrada no histórico`);
+  };
+
   #cacheMedia = async (id: string, waId: string, data: Uint8Array): Promise<void> => {
     const file = this.store.mediaFileFor(id, waId);
     try {
@@ -462,9 +499,22 @@ export class LineManager extends EventEmitter {
       this.store.appendCall(view).catch((err) => log.error(`falha ao gravar ligação no histórico: ${err.message}`));
     });
     line.on("wa-message", (rec: MessageRecord, raw: string) => {
+      if (rec.chatName) this.store.ensureContactName(config.id, rec.remote, rec.chatName).catch(() => {});
       this.store.insertMessage(config.id, rec, raw)
         .then((view) => { if (view) this.emit("event", { type: "message", lineId: config.id, message: view } satisfies LineEvent); })
         .catch((err) => log.error(`falha ao gravar mensagem: ${err.message}`));
+    });
+    line.on("wa-message-update", (waId: string, u: { text?: string; deleted?: boolean }) => {
+      this.store.applyMessageUpdate(config.id, waId, u)
+        .then((view) => {
+          if (!view) return;
+          if (u.deleted) rmSync(this.store.mediaFileFor(config.id, waId), { force: true });
+          this.emit("event", { type: "message-update", lineId: config.id, message: view } satisfies LineEvent);
+        })
+        .catch((err) => log.error(`falha ao atualizar mensagem: ${err.message}`));
+    });
+    line.on("wa-recording", (callId: string, file: string, seconds: number) => {
+      void this.#saveRecording(config.id, callId, file, seconds);
     });
     line.on("wa-message-status", (waId: string, status: MessageStatus) => {
       this.store.updateMessageStatus(config.id, waId, status)
@@ -523,6 +573,29 @@ const sanitizePatch = (p: Partial<LineConfig>): Partial<LineConfig> => {
     for (const o of out.allowedOrigins) {
       if (!/^https?:\/\/[^\s/]+$/.test(o)) throw new HttpError(400, `Origem inválida: ${o} (ex.: https://meusite.com)`);
     }
+  }
+  for (const k of ["businessHoursEnabled", "groupsEnabled", "recordCalls", "transcribeCalls", "transcribeVoiceNotes"] as const) {
+    if (p[k] !== undefined) out[k] = !!p[k];
+  }
+  if (p.offHoursMessage !== undefined) {
+    const msg = String(p.offHoursMessage);
+    if (msg.length > 4096) throw new HttpError(400, "Mensagem fora do horário muito longa (máx. 4096)");
+    out.offHoursMessage = msg;
+  }
+  if (p.businessHours !== undefined) {
+    const hours: LineConfig["businessHours"] = {};
+    const src = (p.businessHours ?? {}) as Record<string, unknown>;
+    for (const day of ["0", "1", "2", "3", "4", "5", "6"] as const) {
+      const ranges = Array.isArray(src[day]) ? (src[day] as unknown[]) : [];
+      hours[day] = ranges.map((r) => {
+        const [a, b] = Array.isArray(r) ? r.map(String) : [];
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(a ?? "") || !/^([01]\d|2[0-4]):[0-5]\d$/.test(b ?? "") || a >= b) {
+          throw new HttpError(400, `Horário inválido (dia ${day}): use ["08:00","18:00"] com início antes do fim`);
+        }
+        return [a, b] as [string, string];
+      });
+    }
+    out.businessHours = hours;
   }
   if (p.webhookUrl !== undefined) {
     const u = String(p.webhookUrl).trim();

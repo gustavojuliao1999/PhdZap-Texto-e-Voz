@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { Prisma, type Call, type Line, type Message, type PrismaClient } from "@prisma/client";
+import { Prisma, type Call, type Contact, type Line, type Message, type PrismaClient, type QuickReply } from "@prisma/client";
 import type { CallView, MessageView } from "./line-manager.js";
 import { log } from "./log.js";
 import type { HandlerName, LineConfig, MessageRecord, MessageStatus } from "./worker/protocol.js";
@@ -9,6 +9,12 @@ import type { HandlerName, LineConfig, MessageRecord, MessageStatus } from "./wo
 export const newLineToken = (): string => `wvl_${randomBytes(24).toString("base64url")}`;
 export const newAdminKey = (): string => `wva_${randomBytes(24).toString("base64url")}`;
 export const newWebhookSecret = (): string => `whs_${randomBytes(24).toString("base64url")}`;
+
+/** Seg–sex 8h–18h, sáb 8h–12h. */
+const DEFAULT_HOURS: LineConfig["businessHours"] = {
+  "1": [["08:00", "18:00"]], "2": [["08:00", "18:00"]], "3": [["08:00", "18:00"]],
+  "4": [["08:00", "18:00"]], "5": [["08:00", "18:00"]], "6": [["08:00", "12:00"]], "0": [],
+};
 
 /** Ordem dos status: um "delivered" atrasado não volta uma mensagem já lida. */
 const STATUS_RANK: Record<MessageStatus, number> = { error: 0, pending: 1, sent: 2, delivered: 3, read: 4, played: 5 };
@@ -30,6 +36,13 @@ const toConfig = (l: Line): LineConfig => ({
   webhookEvents: l.webhookEvents,
   rateLimitPerMinute: l.rateLimitPerMinute,
   rateLimitPerDay: l.rateLimitPerDay,
+  businessHoursEnabled: l.businessHoursEnabled,
+  businessHours: (l.businessHours ?? {}) as LineConfig["businessHours"],
+  offHoursMessage: l.offHoursMessage,
+  groupsEnabled: l.groupsEnabled,
+  recordCalls: l.recordCalls,
+  transcribeCalls: l.transcribeCalls,
+  transcribeVoiceNotes: l.transcribeVoiceNotes,
 });
 
 const fromConfig = (c: LineConfig) => ({
@@ -47,6 +60,13 @@ const fromConfig = (c: LineConfig) => ({
   webhookEvents: c.webhookEvents,
   rateLimitPerMinute: c.rateLimitPerMinute,
   rateLimitPerDay: c.rateLimitPerDay,
+  businessHoursEnabled: c.businessHoursEnabled,
+  businessHours: c.businessHours as Prisma.InputJsonObject,
+  offHoursMessage: c.offHoursMessage,
+  groupsEnabled: c.groupsEnabled,
+  recordCalls: c.recordCalls,
+  transcribeCalls: c.transcribeCalls,
+  transcribeVoiceNotes: c.transcribeVoiceNotes,
 });
 
 const toView = (c: Call): CallView => ({
@@ -65,6 +85,9 @@ const toView = (c: Call): CallView => ({
   connectedAt: c.connectedAt?.toISOString(),
   endedAt: c.endedAt?.toISOString(),
   endReason: c.endReason ?? undefined,
+  hasRecording: !!c.recordingFile,
+  recordingSeconds: c.recordingSeconds ?? undefined,
+  transcript: c.transcript ?? undefined,
 });
 
 const toMessageView = (m: Message): MessageView => {
@@ -83,11 +106,44 @@ const toMessageView = (m: Message): MessageView => {
     status: m.status as MessageStatus,
     agent: m.agent ?? undefined,
     timestamp: m.timestamp.toISOString(),
+    ...(m.participant ? { participant: m.participant } : {}),
+    ...(m.participantName ? { participantName: m.participantName } : {}),
+    ...(m.editedAt ? { editedAt: m.editedAt.toISOString() } : {}),
+    ...(m.deletedAt ? { deletedAt: m.deletedAt.toISOString() } : {}),
+    ...(m.transcript ? { transcript: m.transcript } : {}),
   };
 };
 
+/** Conversa vista pela equipe (dados do atendimento). */
+export type ContactView = {
+  remote: string;
+  name?: string;
+  notes: string;
+  status: "open" | "pending" | "resolved";
+  assignedUserId?: string;
+  assignedName?: string;
+  updatedAt?: string;
+};
+
+export const toContactView = (c: Contact | null, remote: string): ContactView => ({
+  remote,
+  name: c?.name ?? undefined,
+  notes: c?.notes ?? "",
+  status: (c?.status ?? "open") as ContactView["status"],
+  assignedUserId: c?.assignedUserId ?? undefined,
+  assignedName: c?.assignedName ?? undefined,
+  updatedAt: c?.updatedAt.toISOString(),
+});
+
 /** Conversa (contato) de uma linha. */
-export type ChatView = { remote: string; remoteJid: string; name?: string; unread: number; last: MessageView };
+export type ChatView = ContactView & {
+  remoteJid: string;
+  /** Nome do perfil no WhatsApp (o `name` pode ter sido definido pela equipe). */
+  profileName?: string;
+  isGroup: boolean;
+  unread: number;
+  last: MessageView;
+};
 
 const date = (iso?: string): Date | undefined => (iso ? new Date(iso) : undefined);
 
@@ -135,6 +191,13 @@ export class Store {
     webhookEvents: [],
     rateLimitPerMinute: 20,
     rateLimitPerDay: 1000,
+    businessHoursEnabled: false,
+    businessHours: DEFAULT_HOURS,
+    offHoursMessage: "",
+    groupsEnabled: false,
+    recordCalls: false,
+    transcribeCalls: false,
+    transcribeVoiceNotes: false,
   });
 
   insertLine = async (c: LineConfig): Promise<void> => {
@@ -204,6 +267,8 @@ export class Store {
           agent,
           timestamp: new Date(rec.timestamp),
           raw,
+          participant: rec.participant,
+          participantName: rec.participantName,
         },
       });
       return toMessageView(row);
@@ -237,6 +302,59 @@ export class Store {
     return rows.map(toMessageView);
   };
 
+  /** Mensagem editada (novo texto) ou apagada. Retorna a mensagem se mudou algo. */
+  applyMessageUpdate = async (lineId: string, waId: string, u: { text?: string; deleted?: boolean }): Promise<MessageView | null> => {
+    const row = await this.db.message.findUnique({ where: { lineId_waId: { lineId, waId } } });
+    if (!row || row.deletedAt) return null;
+    if (u.deleted) {
+      return toMessageView(await this.db.message.update({
+        where: { id: row.id },
+        // Apagada para todos: não guarda mais o conteúdo.
+        data: { deletedAt: new Date(), text: null, raw: null, extra: Prisma.DbNull, transcript: null },
+      }));
+    }
+    if (u.text === undefined || u.text === row.text) return null;
+    return toMessageView(await this.db.message.update({ where: { id: row.id }, data: { text: u.text, editedAt: new Date() } }));
+  };
+
+  setMessageTranscript = async (lineId: string, waId: string, transcript: string): Promise<MessageView> =>
+    toMessageView(await this.db.message.update({ where: { lineId_waId: { lineId, waId } }, data: { transcript } }));
+
+  // ─── contatos / atendimento ─────────────────────────────────────────────
+
+  getContact = (lineId: string, remote: string): Promise<Contact | null> =>
+    this.db.contact.findUnique({ where: { lineId_remote: { lineId, remote } } });
+
+  upsertContact = async (lineId: string, remote: string, data: Partial<Omit<Contact, "lineId" | "remote" | "createdAt" | "updatedAt">>): Promise<Contact> =>
+    this.db.contact.upsert({ where: { lineId_remote: { lineId, remote } }, create: { lineId, remote, ...data }, update: data });
+
+  /** Dá nome ao contato só se ainda não tiver (ex.: assunto do grupo). */
+  ensureContactName = async (lineId: string, remote: string, name: string): Promise<void> => {
+    const c = await this.getContact(lineId, remote);
+    if (!c) await this.upsertContact(lineId, remote, { name });
+    else if (!c.name) await this.db.contact.update({ where: { lineId_remote: { lineId, remote } }, data: { name } });
+  };
+
+  /** Ligações com um contato (mais recentes primeiro). */
+  callsWith = async (lineId: string, remote: string, limit = 50): Promise<CallView[]> =>
+    (await this.db.call.findMany({ where: { lineId, remote }, orderBy: { startedAt: "desc" }, take: limit })).map(toView);
+
+  getCall = (lineId: string, callId: string): Promise<Call | null> =>
+    this.db.call.findFirst({ where: { lineId, callId } });
+
+  /** Retorna quantas linhas mudaram (0 = a ligação ainda não está no histórico). */
+  updateCall = async (lineId: string, callId: string, data: Prisma.CallUpdateManyMutationInput): Promise<number> =>
+    (await this.db.call.updateMany({ where: { lineId, callId }, data })).count;
+
+  // ─── respostas rápidas ──────────────────────────────────────────────────
+
+  /** Respostas da linha + as globais (lineId vazio). */
+  quickReplies = (lineId?: string): Promise<QuickReply[]> =>
+    this.db.quickReply.findMany({
+      where: lineId ? { OR: [{ lineId }, { lineId: null }] } : {},
+      orderBy: { shortcut: "asc" },
+    });
+
   /** Conversas: última mensagem, nome do contato e não lidas. Mais recentes primeiro. */
   listChats = async (lineId: string): Promise<ChatView[]> => {
     const [last, names, unread] = await Promise.all([
@@ -250,20 +368,26 @@ export class Store {
         ORDER BY "remote", "timestamp" DESC`,
       this.db.message.groupBy({
         by: ["remote"],
-        where: { lineId, direction: "incoming", status: "delivered", type: { not: "reaction" } },
+        where: { lineId, direction: "incoming", status: "delivered", type: { not: "reaction" }, deletedAt: null },
         _count: { _all: true },
       }),
     ]);
     const nameOf = new Map(names.map((n) => [n.remote, n.pushName]));
     const unreadOf = new Map(unread.map((u) => [u.remote, u._count._all]));
+    const contacts = new Map((await this.db.contact.findMany({ where: { lineId } })).map((c) => [c.remote, c]));
     return last
-      .map((m) => ({
-        remote: m.remote,
-        remoteJid: m.remoteJid,
-        name: nameOf.get(m.remote),
-        unread: unreadOf.get(m.remote) ?? 0,
-        last: toMessageView(m),
-      }))
+      .map((m) => {
+        const c = contacts.get(m.remote) ?? null;
+        return {
+          ...toContactView(c, m.remote),
+          remoteJid: m.remoteJid,
+          name: c?.name ?? nameOf.get(m.remote),
+          profileName: nameOf.get(m.remote),
+          isGroup: m.remoteJid.endsWith("@g.us"),
+          unread: unreadOf.get(m.remote) ?? 0,
+          last: toMessageView(m),
+        };
+      })
       .sort((a, b) => b.last.timestamp.localeCompare(a.last.timestamp));
   };
 

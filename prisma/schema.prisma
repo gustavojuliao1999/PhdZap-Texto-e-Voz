@@ -77,10 +77,23 @@ model Line {
   /// Limite de mensagens enviadas pelo gateway (0 = sem limite).
   rateLimitPerMinute   Int         @default(20)
   rateLimitPerDay      Int         @default(1000)
+  /// Horário de atendimento: { "0": [["08:00","18:00"]], …, "6": [] } (0 = domingo).
+  businessHoursEnabled Boolean     @default(false)
+  businessHours        Json        @default("{}")
+  /// Resposta automática fora do horário (vazio = não responde).
+  offHoursMessage      String      @default("")
+  /// Recebe/envia mensagens de grupos.
+  groupsEnabled        Boolean     @default(false)
+  /// Grava as ligações (avise os contatos: exigência da LGPD).
+  recordCalls          Boolean     @default(false)
+  transcribeCalls      Boolean     @default(false)
+  transcribeVoiceNotes Boolean     @default(false)
   groups               GroupLine[]
   calls                Call[]
   messages             Message[]
   webhookDeliveries    WebhookDelivery[]
+  contacts             Contact[]
+  quickReplies         QuickReply[]
 }
 
 /// Histórico de ligações.
@@ -100,6 +113,10 @@ model Call {
   connectedAt DateTime?
   endedAt     DateTime?
   endReason   String?
+  /// Arquivo da gravação (dentro de DATA_DIR) e duração em segundos.
+  recordingFile    String?
+  recordingSeconds Int?
+  transcript       String?
   line        Line?     @relation(fields: [lineId], references: [id], onDelete: SetNull)
 
   @@index([lineId, startedAt(sort: Desc)])
@@ -127,6 +144,13 @@ model Message {
   timestamp DateTime
   /// Mensagem do WhatsApp serializada (para baixar a mídia e responder citando).
   raw       String?
+  /// Grupos: quem mandou.
+  participant     String?
+  participantName String?
+  editedAt  DateTime?
+  deletedAt DateTime?
+  /// Transcrição de áudio de voz.
+  transcript String?
   createdAt DateTime @default(now())
   line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
 
@@ -176,6 +200,40 @@ model AuditLog {
   @@index([at(sort: Desc)])
   @@index([lineId, at(sort: Desc)])
   @@index([action, at(sort: Desc)])
+}
+
+/// Conversa com um contato (ou grupo) numa linha: dados do atendimento.
+model Contact {
+  lineId          String
+  /// Número (dígitos) ou JID do grupo.
+  remote          String
+  /// Nome definido pela equipe (sobrepõe o nome do perfil).
+  name            String?
+  notes           String    @default("")
+  /// open | pending | resolved
+  status          String    @default("open")
+  assignedUserId  String?
+  assignedName    String?
+  lastAutoReplyAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  line            Line      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@id([lineId, remote])
+  @@index([lineId, assignedUserId])
+  @@index([lineId, status])
+}
+
+/// Resposta rápida ("/atalho" no chat). lineId vazio = vale para todos os telefones.
+model QuickReply {
+  id        String   @id @default(cuid())
+  lineId    String?
+  shortcut  String
+  text      String
+  createdAt DateTime @default(now())
+  line      Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([lineId])
 }
 
 /// Sessão de login no painel (cookie). Guarda só o hash do token.

@@ -19,23 +19,36 @@ const silentLogger: any = {
 
 const num = (v: unknown): number | undefined => (v == null ? undefined : Number(v));
 const isUserJid = (jid: string): boolean => /@(s\.whatsapp\.net|lid)$/.test(jid);
+const isGroupJid = (jid: string): boolean => jid.endsWith("@g.us");
+
+/** Tipos do protocolMessage (proto ProtocolMessage.Type). */
+const REVOKE = 0;
+const MESSAGE_EDIT = 14;
+
+/** Texto de um conteúdo (para mensagens editadas). */
+const textOf = (c: any): string | undefined =>
+  c?.conversation ?? c?.extendedTextMessage?.text ?? c?.imageMessage?.caption ?? c?.videoMessage?.caption ?? c?.documentMessage?.caption;
 
 /**
  * Mensagens da linha pelo MESMO socket do Baileys usado nas chamadas
  * (o WhatsApp só aceita uma conexão por aparelho vinculado).
  *
- * Emite `message` (MessageRecord, raw) e `status` ({ id, remoteJid, status }).
- * Só conversas individuais: grupos, status e canais são ignorados.
+ * Emite `message` (MessageRecord, raw), `status` ({ id, remoteJid, status }) e
+ * `update` ({ id, remoteJid, text?, deleted? }) para mensagens editadas/apagadas.
+ * Conversas individuais sempre; grupos só se `groups()` for verdadeiro; status e canais nunca.
  */
 export class MessageService extends EventEmitter {
   #sock: any = null;
   readonly #jidCache = new Map<string, string>();
+  readonly #groupNames = new Map<string, { name: string; at: number }>();
   /** Processa em fila para manter a ordem de chegada (achar o telefone de um LID é assíncrono). */
   #queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly client: VoipClient) {
+  constructor(private readonly client: VoipClient, private readonly groups: () => boolean = () => false) {
     super();
   }
+
+  #allowed = (jid: string): boolean => isUserJid(jid) || (isGroupJid(jid) && this.groups());
 
   get #b(): any { return this.client.baileys; }
 
@@ -50,6 +63,7 @@ export class MessageService extends EventEmitter {
       // (essas já são registradas pelo send). "notify" = mensagens novas.
       if (type !== "notify") return;
       for (const m of messages) {
+        if (this.#handleProtocol(m)) continue;
         this.#queue = this.#queue
           .then(() => this.#toRecord(m))
           .then((rec) => { if (rec) this.emit("message", rec, this.#serialize(m)); })
@@ -59,7 +73,18 @@ export class MessageService extends EventEmitter {
 
     sock.ev.on("messages.update", (updates: any[]) => {
       for (const { key, update } of updates) {
-        if (!key?.fromMe || update?.status == null || !isUserJid(key.remoteJid ?? "")) continue;
+        if (!key?.id || !this.#allowed(key.remoteJid ?? "")) continue;
+        // Apagada para todos (o Baileys troca a mensagem por um "stub" de revogação).
+        if (update?.message === null && Number(update.messageStubType) === 1) {
+          this.emit("update", { id: key.id, remoteJid: key.remoteJid, deleted: true });
+          continue;
+        }
+        const edited = textOf(this.#b.normalizeMessageContent(update?.message?.editedMessage?.message ?? update?.message?.editedMessage));
+        if (edited !== undefined) {
+          this.emit("update", { id: key.id, remoteJid: key.remoteJid, text: edited });
+          continue;
+        }
+        if (!key.fromMe || update?.status == null) continue;
         const status = STATUS[Number(update.status)];
         if (status) this.emit("status", { id: key.id, remoteJid: key.remoteJid, status });
       }
@@ -119,10 +144,40 @@ export class MessageService extends EventEmitter {
   #serialize = (m: any): string => JSON.stringify(m, this.#b.BufferJSON.replacer);
   #parse = (raw: string): any => JSON.parse(raw, this.#b.BufferJSON.reviver);
 
+  /** Apagar/editar chegam como protocolMessage: vira evento `update`. Retorna true se tratou. */
+  #handleProtocol = (m: any): boolean => {
+    const pm = this.#b.normalizeMessageContent(m?.message)?.protocolMessage;
+    if (!pm) return false;
+    const remoteJid = pm.key?.remoteJid || m.key?.remoteJid;
+    const id = pm.key?.id;
+    if (!id || !this.#allowed(remoteJid ?? "")) return true;
+    if (Number(pm.type) === REVOKE) this.emit("update", { id, remoteJid, deleted: true });
+    else if (Number(pm.type) === MESSAGE_EDIT) {
+      const text = textOf(this.#b.normalizeMessageContent(pm.editedMessage));
+      if (text !== undefined) this.emit("update", { id, remoteJid, text });
+    }
+    return true;
+  };
+
+  /** Nome (assunto) do grupo, guardado por 1 hora. */
+  #groupName = async (jid: string): Promise<string | undefined> => {
+    const hit = this.#groupNames.get(jid);
+    if (hit && Date.now() - hit.at < 3_600_000) return hit.name;
+    try {
+      const meta = await this.#requireSock().groupMetadata(jid);
+      if (meta?.subject) this.#groupNames.set(jid, { name: meta.subject, at: Date.now() });
+      return meta?.subject;
+    } catch {
+      return hit?.name;
+    }
+  };
+
   /** Número -> JID do WhatsApp (testa com e sem o 9º dígito no Brasil). */
   #resolveJid = async (to: string): Promise<string> => {
     if (to.includes("@")) {
-      if (!isUserJid(to)) throw new Error("Só é possível enviar para contatos (não para grupos ou listas)");
+      if (!this.#allowed(to)) {
+        throw new Error(isGroupJid(to) ? "Grupos estão desativados nesta linha (Configurações)" : "Destino inválido (use um número ou um JID de contato/grupo)");
+      }
       return to;
     }
     const digits = to.replace(/\D/g, "");
@@ -170,7 +225,8 @@ export class MessageService extends EventEmitter {
   #toRecord = async (m: any): Promise<MessageRecord | null> => {
     const key = m?.key;
     const remoteJid: string = key?.remoteJid ?? "";
-    if (!key?.id || !isUserJid(remoteJid)) return null;
+    if (!key?.id || !this.#allowed(remoteJid)) return null;
+    const group = isGroupJid(remoteJid);
 
     const content = this.#b.normalizeMessageContent(m.message);
     const kind: string | undefined = content ? this.#b.getContentType(content) : undefined;
@@ -180,9 +236,14 @@ export class MessageService extends EventEmitter {
     const rec: MessageRecord = {
       id: key.id,
       direction: key.fromMe ? "outgoing" : "incoming",
-      remote: await this.#phoneOf(remoteJid, key.remoteJidAlt),
+      remote: group ? remoteJid : await this.#phoneOf(remoteJid, key.remoteJidAlt),
       remoteJid,
-      pushName: key.fromMe ? undefined : m.pushName || undefined,
+      pushName: key.fromMe || group ? undefined : m.pushName || undefined,
+      ...(group ? {
+        participant: key.fromMe ? undefined : await this.#phoneOf(key.participant ?? "", key.participantAlt),
+        participantName: key.fromMe ? undefined : m.pushName || undefined,
+        chatName: await this.#groupName(remoteJid),
+      } : {}),
       type: "other",
       status: key.fromMe ? STATUS[Number(m.status ?? 2)] ?? "sent" : "delivered",
       timestamp: new Date((num(m.messageTimestamp) ?? Date.now() / 1000) * 1000).toISOString(),

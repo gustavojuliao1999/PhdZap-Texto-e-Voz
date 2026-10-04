@@ -2,7 +2,7 @@
  * Gateway de voz do WhatsApp — processo principal.
  * Painel, API e iframes; cada telefone roda num processo próprio (src/worker).
  */
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { Sessions } from "./auth/sessions.js";
 import { prisma } from "./db.js";
@@ -10,9 +10,11 @@ import { startServer } from "./http/server.js";
 import { LineManager } from "./line-manager.js";
 import { log } from "./log.js";
 import { Alerts } from "./alerts.js";
+import { Attendance } from "./attendance.js";
 import { startMaintenance } from "./maintenance.js";
 import { watchLines } from "./monitor.js";
 import { Store } from "./store.js";
+import { Transcriber } from "./transcribe.js";
 import { WebhookDispatcher } from "./webhooks.js";
 
 const env = (name: string, fallback = ""): string => process.env[name]?.trim() || fallback;
@@ -56,8 +58,10 @@ const sessions = new Sessions(prisma);
 // Endereço público do gateway: usado nos links de mídia enviados ao webhook.
 const alerts = new Alerts(env("ALERT_WEBHOOK_URL"));
 const webhooks = new WebhookDispatcher(lines, prisma, alerts, env("PUBLIC_URL").replace(/\/+$/, ""));
+const attendance = new Attendance(lines, store, prisma);
+new Transcriber(lines, store);
 const server = startServer({
-  lines, store, webhooks, db: prisma, sessions,
+  lines, store, webhooks, attendance, db: prisma, sessions,
   port: Number(env("PORT", "3000")),
   host: env("HOST", "127.0.0.1"),
   adminKey,
@@ -73,6 +77,17 @@ startMaintenance({
   mediaCacheMaxMb: Number(env("MEDIA_CACHE_MAX_MB", "5120")),
   tasks: [
     webhooks.prune,
+    // Gravações mais antigas que RECORDINGS_DAYS (0 = guarda para sempre).
+    async () => {
+      const days = Number(env("RECORDINGS_DAYS", "0"));
+      if (!days) return;
+      const old = await prisma.call.findMany({ where: { recordingFile: { not: null }, startedAt: { lt: new Date(Date.now() - days * 86_400_000) } } });
+      for (const c of old) {
+        if (c.lineId) rmSync(lines.lineFile(c.lineId, c.recordingFile!), { force: true });
+        await prisma.call.update({ where: { id: c.id }, data: { recordingFile: null, recordingSeconds: null } });
+      }
+      if (old.length) log.info(`${old.length} gravação(ões) antiga(s) removida(s)`);
+    },
     async () => { await prisma.auditLog.deleteMany({ where: { at: { lt: new Date(Date.now() - Number(env("AUDIT_DAYS", "365")) * 86_400_000) } } }); },
   ],
 });

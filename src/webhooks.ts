@@ -7,8 +7,10 @@ import type { LineConfig } from "./worker/protocol.js";
 
 /** Eventos que podem ser enviados ao webhook de uma linha. */
 export const WEBHOOK_EVENTS = [
-  "message.received", "message.sent", "message.status",
+  "message.received", "message.sent", "message.status", "message.updated", "message.deleted",
+  "conversation.updated",
   "call.incoming", "call.dialing", "call.answered", "call.connected", "call.ended", "call.busy",
+  "call.recording", "call.transcript",
   "line.status",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number] | "ping";
@@ -138,6 +140,18 @@ export class WebhookDispatcher {
       case "message-status":
         event = "message.status";
         data = { id: e.message.id, remote: e.message.remote, status: e.message.status, timestamp: e.message.timestamp };
+        break;
+      case "message-update":
+        event = e.message.deletedAt ? "message.deleted" : "message.updated";
+        data = { ...e.message, mediaUrl: e.message.deletedAt ? undefined : this.mediaUrl(e.message) };
+        break;
+      case "contact": event = "conversation.updated"; data = e.contact; break;
+      case "call-update":
+        event = e.kind === "transcript" ? "call.transcript" : "call.recording";
+        data = {
+          ...e.call,
+          ...(e.kind === "recording" ? { recordingUrl: `${this.publicUrl}/api/v1/calls/${encodeURIComponent(e.call.id)}/recording` } : {}),
+        };
         break;
       case "busy": event = "call.busy"; data = { from: e.from }; break;
       case "chat-read": return;

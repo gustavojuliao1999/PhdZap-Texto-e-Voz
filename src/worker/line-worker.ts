@@ -4,7 +4,9 @@
  *
  * Variáveis: LINE_CONFIG (JSON de LineConfig), LINE_AUTH_DIR.
  */
+import path from "node:path";
 import { VoipClient } from "baileys-caller";
+import { recordCall } from "../audio/recorder.js";
 import { CallManager } from "../call-manager.js";
 import { floatToPcm16, pcm16ToFloat } from "../audio/pcm.js";
 import { echoHandler, silenceHandler } from "../handlers/echo.js";
@@ -56,18 +58,33 @@ const client = new VoipClient({
 const whatsapp = new WhatsAppConnection(client, authDir);
 const manager = new CallManager(client, policy, handlers, handlers[line.handler] ?? silenceHandler);
 
-const messages = new MessageService(client);
+const messages = new MessageService(client, () => line.groupsEnabled);
 
 whatsapp.on("state", (state) => {
   if (state.status === "open") messages.attach();
   send({ t: "wa", state });
 });
-manager.on("event", (event) => send({ t: "event", event }));
+manager.on("event", (event) => {
+  send({ t: "event", event });
+  // Gravação: começa quando a ligação conecta (se a linha grava).
+  if (event.type === "connected" && line.recordCalls) {
+    const session = manager.get(event.call.id);
+    const lineDir = path.dirname(authDir);
+    if (session) {
+      recordCall(session, path.join(lineDir, "recordings"))
+        .then((r) => {
+          if (r) send({ t: "event", event: { type: "recording", callId: session.id, file: path.relative(lineDir, r.file), seconds: r.seconds } });
+        })
+        .catch((err) => log.warn(`gravação falhou: ${err.message}`));
+    }
+  }
+});
 // Conexão caiu depois de aberta: o stack WASM não se religa a um socket novo, então
 // o processo sai e o principal sobe outro (que reconecta ou mostra o QR).
 whatsapp.on("lost", () => setTimeout(() => process.exit(RESTART_EXIT_CODE), 500));
 messages.on("message", (message, raw) => send({ t: "event", event: { type: "message", message, raw } }));
 messages.on("status", (s) => send({ t: "event", event: { type: "message-status", ...s } }));
+messages.on("update", (u) => send({ t: "event", event: { type: "message-update", ...u } }));
 
 const requireSession = (callId: string) => {
   const s = manager.get(callId);

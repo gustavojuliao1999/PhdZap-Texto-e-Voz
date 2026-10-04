@@ -24,7 +24,8 @@ export type CallRecord = {
  * Visão de alto nível de uma chamada, entregue aos handlers.
  * Áudio sempre em Float32 16 kHz mono.
  *
- * Eventos: `audio` (Float32Array), `connected`, `ended` (reason).
+ * Eventos: `audio` (Float32Array, do outro lado), `sent-audio` (Float32Array, o que
+ * enviamos), `cleared` (fala interrompida), `connected`, `ended` (reason).
  */
 export class CallSession extends EventEmitter {
   readonly record: CallRecord;
@@ -60,13 +61,17 @@ export class CallSession extends EventEmitter {
   get ended(): boolean { return this.record.status === "ended"; }
   get queuedAudioMs(): number { return this.call.queuedAudioMs; }
 
-  sendAudio = (pcm: Float32Array): void => this.call.sendAudio(pcm);
+  sendAudio = (pcm: Float32Array): void => {
+    this.call.sendAudio(pcm);
+    this.emit("sent-audio", pcm);
+  };
 
   /** Interrompe a fala atual (fila + arquivo em reprodução). */
   clearAudio = (): void => {
     this.#playback?.abort();
     this.#playback = null;
     this.call.clearAudio();
+    this.emit("cleared");
   };
 
   /** Toca um arquivo/URL (qualquer formato do ffmpeg). Interrompe o anterior. */

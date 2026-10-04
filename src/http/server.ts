@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
@@ -17,7 +18,9 @@ import {
 import { log } from "../log.js";
 import { newLineToken, type Store } from "../store.js";
 import type { WebhookDispatcher } from "../webhooks.js";
+import type { Attendance } from "../attendance.js";
 import { assertPublicUrl } from "../net/safe-fetch.js";
+import { transcriptionConfigured } from "../transcribe.js";
 import { docPage } from "./docs.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
@@ -32,6 +35,7 @@ export type ServerDeps = {
   lines: LineManager;
   store: Store;
   webhooks: WebhookDispatcher;
+  attendance: Attendance;
   db: PrismaClient;
   sessions: Sessions;
   port: number;
@@ -61,6 +65,33 @@ const sendJson = (res: http.ServerResponse, status: number, data: unknown): void
   if (res.headersSent) return;
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(data));
+};
+
+/** Envia um arquivo com suporte a Range (players de áudio precisam para avançar/voltar). */
+const sendFile = async (req: http.IncomingMessage, res: http.ServerResponse, file: string, type: string, name: string): Promise<void> => {
+  let size: number;
+  try { size = (await stat(file)).size; } catch { throw new HttpError(404, "Arquivo não encontrado"); }
+  const headers: Record<string, string | number> = {
+    "content-type": type,
+    "accept-ranges": "bytes",
+    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "cache-control": "private, max-age=86400",
+    "x-content-type-options": "nosniff",
+  };
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
+  if (m && (m[1] || m[2])) {
+    const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+    const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    if (start >= size || start > end) {
+      res.writeHead(416, { "content-range": `bytes */${size}` });
+      return void res.end();
+    }
+    res.writeHead(206, { ...headers, "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
+    createReadStream(file, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...headers, "content-length": size });
+  createReadStream(file).pipe(res);
 };
 
 const redirect = (res: http.ServerResponse, location: string): void => {
@@ -129,6 +160,13 @@ const lineView = (line: LineRuntime, p: Principal) => {
       webhookEvents: c.webhookEvents,
       rateLimitPerMinute: c.rateLimitPerMinute,
       rateLimitPerDay: c.rateLimitPerDay,
+      businessHoursEnabled: c.businessHoursEnabled,
+      businessHours: c.businessHours,
+      offHoursMessage: c.offHoursMessage,
+      groupsEnabled: c.groupsEnabled,
+      recordCalls: c.recordCalls,
+      transcribeCalls: c.transcribeCalls,
+      transcribeVoiceNotes: c.transcribeVoiceNotes,
     } : {}),
   };
 };
@@ -136,7 +174,7 @@ const lineView = (line: LineRuntime, p: Principal) => {
 // ─── servidor ────────────────────────────────────────────────────────────────
 
 export const startServer = (deps: ServerDeps): http.Server => {
-  const { lines, store, db, sessions, webhooks } = deps;
+  const { lines, store, db, sessions, webhooks, attendance } = deps;
   const audit = makeAudit(db);
   const loginFailures = new Map<string, { count: number; since: number }>();
 
@@ -354,7 +392,9 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (parts[0] === "me" && method === "GET") {
         return sendJson(res, 200, {
           kind: me.kind,
+          id: me.kind === "user" ? me.id : undefined,
           name: displayName(me),
+          transcriptionAvailable: transcriptionConfigured(),
           username: me.kind === "user" ? me.username : undefined,
           isAdmin: isAdmin(me),
           permissionLabels: PERMISSION_LABELS,
@@ -438,6 +478,48 @@ export const startServer = (deps: ServerDeps): http.Server => {
         if (lineId && !can(me, lineId, "view")) throw new HttpError(403, "Sem permissão para este telefone");
         return sendJson(res, 200, await store.recentCalls(lineId ? [lineId] : visible, 200));
       }
+      if (parts[0] === "quick-replies") {
+        const lineIdOf = async (id: string): Promise<string | null> => {
+          const q = await db.quickReply.findUnique({ where: { id } });
+          if (!q) throw new HttpError(404, "Resposta rápida não encontrada");
+          return q.lineId;
+        };
+        // Respostas de um telefone: permissão "settings" nele. Globais: só administradores.
+        const requireManage = (lineId: string | null): void => { if (lineId) requirePerm(me, lineId, "settings"); else requireAdmin(me); };
+        const clean = (b: any) => {
+          const shortcut = String(b.shortcut ?? "").trim().replace(/^\//, "").toLowerCase();
+          const text = String(b.text ?? "");
+          if (!/^[\p{L}\p{N}_-]{1,30}$/u.test(shortcut)) throw new HttpError(400, "Atalho: 1 a 30 letras, números, _ ou -");
+          if (!text.trim() || text.length > 4096) throw new HttpError(400, "Texto: 1 a 4096 caracteres");
+          return { shortcut, text };
+        };
+        if (method === "GET" && !parts[1]) {
+          const lineId = url.searchParams.get("line") ?? undefined;
+          if (lineId) requirePerm(me, lineId, "view");
+          return sendJson(res, 200, (await store.quickReplies(lineId)).filter((q) => !q.lineId || can(me, q.lineId, "view")));
+        }
+        if (method === "POST" && !parts[1]) {
+          const b = await readJson(req);
+          const lineId = b.lineId ? String(b.lineId) : null;
+          if (lineId && !lines.get(lineId)) throw new HttpError(404, "Telefone não encontrado");
+          requireManage(lineId);
+          const q = await db.quickReply.create({ data: { lineId, ...clean(b) } });
+          audit(me, req, "quick-reply.create", { lineId: lineId ?? undefined, target: `/${q.shortcut}` });
+          return sendJson(res, 201, q);
+        }
+        if (parts[1] && (method === "PATCH" || method === "DELETE")) {
+          const lineId = await lineIdOf(parts[1]);
+          requireManage(lineId);
+          if (method === "DELETE") {
+            const q = await db.quickReply.delete({ where: { id: parts[1] } });
+            audit(me, req, "quick-reply.delete", { lineId: lineId ?? undefined, target: `/${q.shortcut}` });
+            return sendJson(res, 200, { ok: true });
+          }
+          const q = await db.quickReply.update({ where: { id: parts[1] }, data: clean(await readJson(req)) });
+          audit(me, req, "quick-reply.update", { lineId: lineId ?? undefined, target: `/${q.shortcut}` });
+          return sendJson(res, 200, q);
+        }
+      }
       if (parts[0] === "audit" && method === "GET") {
         requireAdmin(me);
         const before = url.searchParams.get("before");
@@ -491,6 +573,8 @@ export const startServer = (deps: ServerDeps): http.Server => {
 
       if (parts[0] === "calls" && parts.length === 1) {
         if (method === "GET") {
+          const contact = url.searchParams.get("contact");
+          if (contact) return sendJson(res, 200, { current: line.current, history: await store.callsWith(lineId, contact, 100) });
           return sendJson(res, 200, { current: line.current, history: await store.recentCalls([lineId], 100) });
         }
         if (method === "POST") {
@@ -505,6 +589,13 @@ export const startServer = (deps: ServerDeps): http.Server => {
           });
           return sendJson(res, 201, call);
         }
+      }
+
+      if (parts[0] === "calls" && parts.length === 3 && parts[2] === "recording" && method === "GET") {
+        requirePerm(principal, lineId, "view");
+        const call = await store.getCall(lineId, decodeURIComponent(parts[1]));
+        if (!call?.recordingFile) throw new HttpError(404, "Ligação sem gravação");
+        return sendFile(req, res, lines.lineFile(lineId, call.recordingFile), "audio/ogg", `ligacao-${call.remote}-${call.startedAt.toISOString().slice(0, 16).replace(/[:T]/g, "-")}.ogg`);
       }
 
       if (parts[0] === "calls" && parts.length === 3 && method === "POST") {
@@ -548,6 +639,12 @@ export const startServer = (deps: ServerDeps): http.Server => {
         }
         return sendJson(res, 200, { ok: true });
       }
+      if ((parts[0] === "agents" || parts[0] === "quick-replies") && parts.length === 1 && method === "GET") {
+        requirePerm(principal, lineId, "messages");
+        if (parts[0] === "agents") return sendJson(res, 200, await attendance.agents(lineId));
+        return sendJson(res, 200, (await store.quickReplies(lineId)).map((q) => ({ id: q.id, shortcut: q.shortcut, text: q.text, global: !q.lineId })));
+      }
+
       if (parts[0] === "chats" || parts[0] === "contacts") {
         requirePerm(principal, lineId, "messages");
         if (parts[0] === "chats" && parts.length === 1 && method === "GET") {
@@ -558,6 +655,14 @@ export const startServer = (deps: ServerDeps): http.Server => {
         if (parts[0] === "chats" && parts.length === 3 && parts[2] === "read" && method === "POST") {
           await lines.markChatRead(lineId, remote);
           return sendJson(res, 200, { ok: true });
+        }
+        if (parts[0] === "contacts" && parts.length === 2 && method === "GET") {
+          const [contact, calls] = await Promise.all([attendance.get(lineId, remote), store.callsWith(lineId, remote, 20)]);
+          return sendJson(res, 200, { ...contact, calls });
+        }
+        if (parts[0] === "contacts" && parts.length === 2 && method === "PATCH") {
+          const me = principal.kind === "user" ? { id: principal.id, name: principal.name } : undefined;
+          return sendJson(res, 200, await attendance.update(lineId, remote, await readJson(req), me));
         }
         if (parts[0] === "contacts" && parts.length === 3 && parts[2] === "photo" && method === "GET") {
           const jid = url.searchParams.get("jid") ?? undefined;
@@ -578,7 +683,9 @@ export const startServer = (deps: ServerDeps): http.Server => {
           const before = url.searchParams.get("before");
           const beforeDate = before ? new Date(before) : undefined;
           if (beforeDate && Number.isNaN(beforeDate.getTime())) throw new HttpError(400, "Parâmetro 'before' inválido (use data ISO)");
-          const contact = url.searchParams.get("contact")?.replace(/\D/g, "") || undefined;
+          // Número (só dígitos) ou JID (grupos e contatos só com LID).
+          const rawContact = url.searchParams.get("contact")?.trim() ?? "";
+          const contact = (rawContact.includes("@") ? rawContact : rawContact.replace(/\D/g, "")) || undefined;
           const list = await store.listMessages(lineId, {
             remote: contact,
             before: beforeDate,
@@ -603,14 +710,23 @@ export const startServer = (deps: ServerDeps): http.Server => {
           // O arquivo vem do contato: só mídia comum abre no navegador; o resto (HTML, SVG…)
           // é baixado, e o sandbox impede script na origem do painel.
           const inline = /^(image\/(jpeg|png|gif|webp)|video\/|audio\/)/.test(mime);
-          res.writeHead(200, {
+          const headers = {
             "content-type": mime,
-            "content-length": data.length,
+            "accept-ranges": "bytes",
             "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
             "content-security-policy": "default-src 'none'; sandbox",
             "cache-control": "private, max-age=86400",
             "x-content-type-options": "nosniff",
-          });
+          };
+          // Range: players de áudio/vídeo pedem pedaços para avançar/voltar.
+          const r = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ""));
+          if (r && Number(r[1]) < data.length) {
+            const start = Number(r[1]);
+            const end = r[2] ? Math.min(Number(r[2]), data.length - 1) : data.length - 1;
+            res.writeHead(206, { ...headers, "content-range": `bytes ${start}-${end}/${data.length}`, "content-length": end - start + 1 });
+            return void res.end(data.subarray(start, end + 1));
+          }
+          res.writeHead(200, { ...headers, "content-length": data.length });
           return void res.end(data);
         }
         if (parts.length === 3 && parts[2] === "read" && method === "POST") {
@@ -629,7 +745,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
     if (req.url?.startsWith("/api/v1/")) {
       res.setHeader("access-control-allow-origin", "*");
       res.setHeader("access-control-allow-headers", "authorization, content-type, x-line-id");
-      res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+      res.setHeader("access-control-allow-methods", "GET, POST, PATCH, OPTIONS");
       if (req.method === "OPTIONS") { res.writeHead(204); return void res.end(); }
     }
     handle(req, res).catch((err: any) => {
@@ -668,8 +784,8 @@ const attachWebSockets = (
 
   lines.on("event", (e: LineEvent) => {
     // Mensagens só para quem tem a permissão; elas não mudam o estado da linha.
-    if (e.type === "message" || e.type === "message-status" || e.type === "chat-read") {
-      const msg = e.type === "chat-read" ? e : { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
+    if (e.type === "message" || e.type === "message-status" || e.type === "message-update" || e.type === "chat-read" || e.type === "contact") {
+      const msg = e.type === "chat-read" || e.type === "contact" ? e : { ...e, message: { ...e.message, mediaUrl: deps.webhooks.mediaUrl(e.message) } };
       for (const [ws, p] of lineClients.get(e.lineId) ?? []) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       for (const [ws, p] of adminClients) if (can(p, e.lineId, "messages")) sendOne(ws, msg);
       return;
@@ -679,7 +795,8 @@ const attachWebSockets = (
     for (const [ws, p] of adminClients) {
       if (!can(p, e.lineId, "view")) continue;
       sendOne(ws, e);
-      if (line) sendOne(ws, { type: "line-admin", line: lineView(line, p) });
+      // call-update não muda o estado da linha.
+      if (line && e.type !== "call-update") sendOne(ws, { type: "line-admin", line: lineView(line, p) });
     }
     if (e.type === "ended") for (const ws of mediaClients.get(e.call.id) ?? []) ws.close(1000, "chamada encerrada");
   });

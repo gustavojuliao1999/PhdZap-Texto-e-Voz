@@ -26,7 +26,17 @@ export type LineConfig = CallPolicy & {
   /** Limite de mensagens enviadas pelo gateway (0 = sem limite). */
   rateLimitPerMinute: number;
   rateLimitPerDay: number;
+  /** Horário de atendimento por dia da semana (0 = domingo): [["08:00","18:00"]]. */
+  businessHoursEnabled: boolean;
+  businessHours: BusinessHours;
+  offHoursMessage: string;
+  groupsEnabled: boolean;
+  recordCalls: boolean;
+  transcribeCalls: boolean;
+  transcribeVoiceNotes: boolean;
 };
+
+export type BusinessHours = Partial<Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", [string, string][]>>;
 
 export type MessageType =
   | "text" | "image" | "video" | "audio" | "document" | "sticker" | "location" | "contact" | "reaction" | "other";
@@ -49,6 +59,10 @@ export type MessageRecord = {
   contact?: { name?: string; vcard?: string };
   /** Id da mensagem respondida (ou reagida). */
   replyTo?: string;
+  /** Grupos: quem mandou (número) e o nome do perfil; nome do grupo. */
+  participant?: string;
+  participantName?: string;
+  chatName?: string;
   status: MessageStatus;
   timestamp: string;
 };
@@ -77,7 +91,11 @@ export type GatewayEvent =
   | { type: "ended"; call: CallRecord }
   /** `raw`: mensagem do WhatsApp serializada (para baixar mídia e responder). */
   | { type: "message"; message: MessageRecord; raw: string }
-  | { type: "message-status"; id: string; remoteJid: string; status: MessageStatus };
+  | { type: "message-status"; id: string; remoteJid: string; status: MessageStatus }
+  /** Gravação pronta. `file` é relativo à pasta da linha (ex.: recordings/ABC.ogg). */
+  | { type: "recording"; callId: string; file: string; seconds: number }
+  /** Mensagem editada (novo texto) ou apagada para todos. */
+  | { type: "message-update"; id: string; remoteJid: string; text?: string; deleted?: boolean };
 
 export type WorkerCommand =
   | { cmd: "dial"; to: string; handler?: string }
