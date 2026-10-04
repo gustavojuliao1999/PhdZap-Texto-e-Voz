@@ -8,3 +8,4 @@ auth
 .git
 Dockerfile
 docker-compose.yml
+backups

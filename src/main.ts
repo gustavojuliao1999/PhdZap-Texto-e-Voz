@@ -9,6 +9,9 @@ import { prisma } from "./db.js";
 import { startServer } from "./http/server.js";
 import { LineManager } from "./line-manager.js";
 import { log } from "./log.js";
+import { Alerts } from "./alerts.js";
+import { startMaintenance } from "./maintenance.js";
+import { watchLines } from "./monitor.js";
 import { Store } from "./store.js";
 import { WebhookDispatcher } from "./webhooks.js";
 
@@ -51,7 +54,8 @@ if ((await store.listLines()).length === 0 && existsSync(path.join(legacyAuth, "
 const lines = new LineManager(store);
 const sessions = new Sessions(prisma);
 // Endereço público do gateway: usado nos links de mídia enviados ao webhook.
-const webhooks = new WebhookDispatcher(lines, env("PUBLIC_URL").replace(/\/+$/, ""));
+const alerts = new Alerts(env("ALERT_WEBHOOK_URL"));
+const webhooks = new WebhookDispatcher(lines, prisma, alerts, env("PUBLIC_URL").replace(/\/+$/, ""));
 const server = startServer({
   lines, store, webhooks, db: prisma, sessions,
   port: Number(env("PORT", "3000")),
@@ -61,6 +65,14 @@ const server = startServer({
 });
 await lines.startAll();
 log.info(`${lines.lines.length} telefone(s) carregado(s)`);
+await webhooks.start();
+watchLines(lines, alerts);
+startMaintenance({
+  dataDir: store.dataDir,
+  mediaCacheDays: Number(env("MEDIA_CACHE_DAYS", "30")),
+  mediaCacheMaxMb: Number(env("MEDIA_CACHE_MAX_MB", "5120")),
+  tasks: [webhooks.prune],
+});
 
 let shuttingDown = false;
 const shutdown = async (): Promise<void> => {

@@ -373,6 +373,17 @@ export const startServer = (deps: ServerDeps): http.Server => {
           requirePerm(me, id, "settings");
           return sendJson(res, 200, await webhooks.test(id));
         }
+        if (action === "webhook-deliveries") {
+          requirePerm(me, id, "settings");
+          const sub = parts[3];
+          if (method === "GET" && !sub) {
+            const status = url.searchParams.get("status") ?? undefined;
+            const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
+            return sendJson(res, 200, { summary: await webhooks.summary(id), deliveries: await webhooks.list(id, { status, limit }) });
+          }
+          if (method === "POST" && sub === "retry-failed") return sendJson(res, 200, { requeued: await webhooks.retry(id) });
+          if (method === "POST" && sub && parts[4] === "retry") return sendJson(res, 200, { requeued: await webhooks.retry(id, [sub]) });
+        }
         if (method === "POST" && action === "logout") { requirePerm(me, id, "connection"); await lines.logout(id); return sendJson(res, 200, { ok: true }); }
         if (method === "POST" && action === "restart") {
           requirePerm(me, id, "connection");

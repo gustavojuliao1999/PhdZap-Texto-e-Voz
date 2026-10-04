@@ -31,3 +31,4 @@ Thumbs.db
 !.vscode/extensions.json
 *.swp
 *~
+backups/

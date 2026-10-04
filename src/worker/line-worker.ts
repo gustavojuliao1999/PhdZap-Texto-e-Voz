@@ -63,6 +63,9 @@ whatsapp.on("state", (state) => {
   send({ t: "wa", state });
 });
 manager.on("event", (event) => send({ t: "event", event }));
+// Conexão caiu depois de aberta: o stack WASM não se religa a um socket novo, então
+// o processo sai e o principal sobe outro (que reconecta ou mostra o QR).
+whatsapp.on("lost", () => setTimeout(() => process.exit(RESTART_EXIT_CODE), 500));
 messages.on("message", (message, raw) => send({ t: "event", event: { type: "message", message, raw } }));
 messages.on("status", (s) => send({ t: "event", event: { type: "message-status", ...s } }));
 

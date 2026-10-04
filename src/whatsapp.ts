@@ -19,7 +19,8 @@ const RETRY_DELAY_MS = 3000;
 
 /**
  * Mantém a conexão do WhatsApp e expõe o estado (incluindo o QR) para o painel.
- * Emite `state` (WhatsAppState) a cada mudança.
+ * Emite `state` (WhatsAppState) a cada mudança e `lost` quando a conexão cai depois
+ * de aberta (o processo da linha deve reiniciar para reconectar).
  */
 export class WhatsAppConnection extends EventEmitter {
   #state: WhatsAppState = { status: "connecting" };
@@ -31,6 +32,15 @@ export class WhatsAppConnection extends EventEmitter {
       QRCode.toString(qr, { type: "svg", margin: 1, errorCorrectionLevel: "L" })
         .then((svg) => this.#set({ status: "qr", qrSvg: svg }))
         .catch((err) => log.error("falha ao gerar QR:", err));
+    });
+    client.on("connection-lost", (info: { statusCode?: number; loggedOut?: boolean; error?: string }) => {
+      if (this.#loggingOut) return;
+      log.warn(`conexão com o WhatsApp caiu${info.statusCode ? ` (código ${info.statusCode})` : ""}: ${info.error ?? "sem detalhes"}; reconectando`);
+      this.#set({
+        status: "error",
+        error: info.loggedOut ? "Aparelho desconectado pelo celular. Gerando novo QR…" : "Conexão caiu. Reconectando…",
+      });
+      this.emit("lost", info);
     });
   }
 

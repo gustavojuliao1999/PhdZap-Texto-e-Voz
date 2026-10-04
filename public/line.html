@@ -313,6 +313,27 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
         </div>
       </form>
 
+      <div class="card" id="deliveriesCard" hidden>
+        <div class="row" style="justify-content:space-between">
+          <h4 style="margin:0">Entregas do webhook</h4>
+          <div class="row">
+            <select id="dlvFilter" style="width:auto;padding:6px 10px">
+              <option value="">Todas</option><option value="failed">Falharam</option>
+              <option value="pending">Na fila</option><option value="delivered">Entregues</option>
+            </select>
+            <button class="ghost small" type="button" id="dlvRefresh">Atualizar</button>
+            <button class="small" type="button" id="dlvRetryAll">Reenviar falhas</button>
+          </div>
+        </div>
+        <div class="hint" id="dlvSummary"></div>
+        <div class="history-wrap" style="margin-top:10px">
+          <table>
+            <thead><tr><th>Quando</th><th>Evento</th><th>Situação</th><th>Tentativas</th><th>Resposta</th><th></th></tr></thead>
+            <tbody id="dlvRows"></tbody>
+          </table>
+        </div>
+        <div class="hint">Entregues ficam 7 dias no histórico; as que falharam, 30 dias.</div>
+      </div>
       <div class="card danger-zone" id="dangerZone">
         <h4 style="margin-top:0">Ações da linha</h4>
         <div class="row">
@@ -352,6 +373,7 @@ const showTab = () => {
   for (const t of TABS) $(`tab-${t}`).hidden = t !== tab;
   document.body.classList.toggle("chat-mode", tab === "mensagens");
   if (tab === "mensagens" || has("messages")) chat.activate();
+  if (tab === "configuracoes" && has("settings")) loadDeliveries();
   document.querySelectorAll(".tabs a[data-tab]").forEach((a) => {
     a.hidden = !tabAllowed(a.dataset.tab);
     a.classList.toggle("active", a.dataset.tab === tab);
@@ -601,9 +623,49 @@ $("configForm").addEventListener("submit", act(async (e) => {
     webhookSecret: $("fWebhookSecret").value.trim(),
     webhookEvents: [...document.querySelectorAll("#fWebhookEvents input:checked")].map((c) => c.value),
   });
-  render(); fillForm();
+  render(); fillForm(); loadDeliveries();
   toast("Configurações salvas", true);
 }));
+// ─── entregas do webhook ─────────────────────────────────────────────────
+const DLV = { pending: ["na fila", "qr"], delivered: ["entregue", "open"], failed: ["falhou", "error"] };
+let dlvTimer = null;
+const loadDeliveries = async () => {
+  clearTimeout(dlvTimer);
+  if (!has("settings") || location.hash !== "#configuracoes") return;
+  $("deliveriesCard").hidden = !line?.webhookUrl;
+  if (!line?.webhookUrl) return;
+  try {
+    const status = $("dlvFilter").value;
+    const r = await api("GET", `/lines/${lineId}/webhook-deliveries?limit=50${status ? `&status=${status}` : ""}`);
+    const s = r.summary;
+    $("dlvSummary").textContent = `${s.delivered ?? 0} entregue(s) · ${s.pending ?? 0} na fila · ${s.failed ?? 0} com falha`;
+    $("dlvRetryAll").disabled = !s.failed;
+    $("dlvRows").innerHTML = r.deliveries.map((d) => `<tr>
+      <td class="num">${new Date(d.createdAt).toLocaleString("pt-BR")}</td>
+      <td><code>${esc(d.event)}</code></td>
+      <td><span class="badge ${DLV[d.status]?.[1] ?? ""}">${DLV[d.status]?.[0] ?? esc(d.status)}</span></td>
+      <td class="num">${d.attempts}</td>
+      <td>${d.lastError ? `<span style="color:var(--red)">${esc(d.lastError)}</span>` : d.lastStatus ? `HTTP ${d.lastStatus}` : "—"}</td>
+      <td>${d.status !== "pending" ? `<button class="ghost small" data-retry="${esc(d.id)}">Reenviar</button>` : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted" style="text-align:center;padding:18px">Nenhum evento enviado ainda</td></tr>`;
+  } catch (e) { toast(e.message); }
+  dlvTimer = setTimeout(loadDeliveries, 10_000);
+};
+$("dlvFilter").onchange = loadDeliveries;
+$("dlvRefresh").onclick = loadDeliveries;
+$("dlvRetryAll").onclick = act(async () => {
+  const r = await api("POST", `/lines/${lineId}/webhook-deliveries/retry-failed`);
+  toast(`${r.requeued} evento(s) de volta para a fila`, true);
+  loadDeliveries();
+});
+$("dlvRows").onclick = act(async (ev) => {
+  const id = ev.target.closest("[data-retry]")?.dataset.retry;
+  if (!id) return;
+  await api("POST", `/lines/${lineId}/webhook-deliveries/${encodeURIComponent(id)}/retry`);
+  toast("Evento de volta para a fila", true);
+  loadDeliveries();
+});
+
 $("copyDocsBtn").onclick = async () => {
   await navigator.clipboard.writeText(`${location.origin}/docs/api`);
   toast("Link da documentação copiado", true);

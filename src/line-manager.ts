@@ -113,12 +113,17 @@ export class LineRuntime extends EventEmitter {
 
       if (this.#stopping) { this.#emitLine(); return; }
       if (code === RESTART_EXIT_CODE) {
-        log.info(`[${this.config.name}] reiniciando linha`);
-        this.#crashDelay = 1000;
-        return this.start();
+        // Reinício pedido (logout ou conexão caiu). Se repetir muito rápido, espera mais.
+        const quick = Date.now() - startedAt < 30_000;
+        const delay = quick ? this.#crashDelay : 1000;
+        this.#crashDelay = quick ? Math.min(this.#crashDelay * 2, 30_000) : 1000;
+        log.info(`[${this.config.name}] reiniciando linha${delay > 1000 ? ` em ${delay / 1000}s` : ""}`);
+        setTimeout(() => { if (!this.#stopping) this.start(); }, delay);
+        return;
       }
       if (Date.now() - startedAt > 60_000) this.#crashDelay = 1000;
       log.error(`[${this.config.name}] processo da linha caiu (code=${code} signal=${signal}); reiniciando em ${this.#crashDelay / 1000}s`);
+      this.emit("crashed", signal ? `sinal ${signal}` : `código ${code}`);
       this.#setWa({ status: "error", error: "Processo da linha caiu; reiniciando…" });
       setTimeout(() => { if (!this.#stopping) this.start(); }, this.#crashDelay);
       this.#crashDelay = Math.min(this.#crashDelay * 2, 30_000);
@@ -442,6 +447,7 @@ export class LineManager extends EventEmitter {
     this.#lines.set(config.id, line);
     line.on("event", (e: LineEvent) => this.emit("event", e));
     line.on("wa", () => this.emit("wa", config.id));
+    line.on("crashed", (detail: string) => this.emit("crashed", config.id, detail));
     line.on("audio", (callId: string, pcm: Buffer) => this.emit("audio", config.id, callId, pcm));
     line.on("ended-call", (view: CallView) => {
       this.store.appendCall(view).catch((err) => log.error(`falha ao gravar ligação no histórico: ${err.message}`));

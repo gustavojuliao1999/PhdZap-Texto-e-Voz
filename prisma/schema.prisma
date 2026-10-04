@@ -77,6 +77,7 @@ model Line {
   groups               GroupLine[]
   calls                Call[]
   messages             Message[]
+  webhookDeliveries    WebhookDelivery[]
 }
 
 /// Histórico de ligações.
@@ -129,6 +130,29 @@ model Message {
   @@unique([lineId, waId])
   @@index([lineId, remote, timestamp(sort: Desc)])
   @@index([lineId, timestamp(sort: Desc)])
+}
+
+/// Fila e histórico de entregas do webhook (sobrevive a reinícios do gateway).
+model WebhookDelivery {
+  /// Id do evento (o mesmo do campo "id" do corpo).
+  id            String    @id
+  /// Ordem de envio dentro da linha.
+  seq           Int       @default(autoincrement())
+  lineId        String
+  event         String
+  body          String
+  /// pending | delivered | failed
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  lastStatus    Int?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  deliveredAt   DateTime?
+  line          Line      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([lineId, status, seq])
+  @@index([lineId, createdAt(sort: Desc)])
 }
 
 /// Sessão de login no painel (cookie). Guarda só o hash do token.
