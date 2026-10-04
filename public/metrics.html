@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Métricas · WhatsApp Voice Gateway</title>
+<link rel="stylesheet" href="/static/ui.css">
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  .viz-root {
+    /* Paleta categórica de referência (passos para fundo escuro), validada contra --surface-1. */
+    --surface-1: #182128;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --grid: #26333c;
+    --text-primary: #e6edf1;
+    --text-secondary: #8a9ba6;
+  }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; align-items: center; }
+  .filters select { width: auto; min-width: 170px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .tile .k { color: var(--text-secondary); font-size: 12.5px; }
+  .tile .v { font-size: 28px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .tile .s { color: var(--text-secondary); font-size: 12.5px; margin-top: 2px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 14px; }
+  @media (max-width: 560px) { .charts { grid-template-columns: 1fr; } }
+  .chart-card { position: relative; }
+  .chart-card h3 { font-size: 15px; margin: 0; }
+  .chart-card .sub { color: var(--text-secondary); font-size: 12.5px; margin: 2px 0 8px; }
+  .legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .plot { width: 100%; height: 240px; display: block; }
+  .plot text { fill: var(--text-secondary); font-size: 11px; font-family: system-ui, sans-serif; }
+  .plot .grid { stroke: var(--grid); stroke-width: 1; }
+  .plot .lbl { fill: var(--text-primary); font-size: 11.5px; }
+  .tip {
+    position: absolute; pointer-events: none; background: #0f1418; border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; font-size: 12.5px; color: var(--text-primary); white-space: nowrap; display: none; z-index: 5;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+  }
+  .tip b { display: block; margin-bottom: 2px; }
+  .tip .row2 { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+  .tip .row2 i { width: 8px; height: 8px; border-radius: 2px; }
+  .tip .row2 em { font-style: normal; color: var(--text-primary); margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; }
+  details.table-view { margin-top: 6px; font-size: 12.5px; }
+  details.table-view summary { cursor: pointer; color: var(--text-secondary); }
+  details.table-view table { margin-top: 6px; }
+  .empty-note { color: var(--text-secondary); font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 WhatsApp Voice Gateway</h1>
+  <nav id="nav"></nav>
+</header>
+<main class="viz-root">
+  <div class="section-title"><h2>Métricas de atendimento</h2></div>
+  <div class="filters">
+    <select id="fDays">
+      <option value="1">Hoje</option>
+      <option value="7" selected>Últimos 7 dias</option>
+      <option value="30">Últimos 30 dias</option>
+      <option value="90">Últimos 90 dias</option>
+    </select>
+    <select id="fLine"><option value="">Todos os telefones</option></select>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="charts">
+    <div class="card chart-card">
+      <h3>Ligações recebidas por dia</h3>
+      <div class="sub">Atendidas e perdidas</div>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Atendidas</span><span><i style="background:var(--series-2)"></i>Perdidas</span></div>
+      <svg class="plot" id="cCalls" role="img" aria-label="Ligações recebidas por dia, atendidas e perdidas"></svg>
+      <div class="tip"></div>
+      <details class="table-view"><summary>Ver como tabela</summary><div id="tCalls"></div></details>
+    </div>
+    <div class="card chart-card">
+      <h3>Mensagens por dia</h3>
+      <div class="sub">Recebidas e enviadas</div>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Recebidas</span><span><i style="background:var(--series-2)"></i>Enviadas</span></div>
+      <svg class="plot" id="cMsgs" role="img" aria-label="Mensagens recebidas e enviadas por dia"></svg>
+      <div class="tip"></div>
+      <details class="table-view"><summary>Ver como tabela</summary><div id="tMsgs"></div></details>
+    </div>
+    <div class="card chart-card">
+      <h3>Ligações recebidas por hora do dia</h3>
+      <div class="sub">Quando mais ligam: ajuda a montar a escala</div>
+      <svg class="plot" id="cHours" role="img" aria-label="Ligações recebidas por hora do dia"></svg>
+      <div class="tip"></div>
+      <details class="table-view"><summary>Ver como tabela</summary><div id="tHours"></div></details>
+    </div>
+    <div class="card chart-card">
+      <h3>Por atendente</h3>
+      <div class="sub">No período</div>
+      <div class="history-wrap"><table>
+        <thead><tr><th>Atendente</th><th>Atendeu</th><th>Ligou</th><th>Tempo em ligação</th><th>Mensagens</th></tr></thead>
+        <tbody id="agents"></tbody>
+      </table></div>
+    </div>
+  </div>
+</main>
+<script type="module">
+import { esc } from "/static/voice.js";
+import { $, api, toast, loadMe, renderNav } from "/static/admin.js";
+
+const NS = "http://www.w3.org/2000/svg";
+const fmtInt = (v) => Number(v).toLocaleString("pt-BR");
+const fmtDur = (s) => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}h${String(m).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`; };
+const fmtDay = (d) => { const [y, m, dd] = d.split("-"); return `${dd}/${m}`; };
+const weekday = (d) => new Date(`${d}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short" });
+let data = null;
+
+/** Escala "bonita" para o eixo Y: máximo arredondado e 4 marcas. */
+const niceScale = (max) => {
+  if (max <= 4) return { max: Math.max(max, 1) <= 4 ? 4 : max, ticks: [0, 1, 2, 3, 4] };
+  const raw = max / 4, pow = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * pow).find((s) => s >= raw);
+  return { max: step * 4, ticks: [0, 1, 2, 3, 4].map((i) => i * step) };
+};
+
+const el = (name, attrs, parent) => {
+  const e = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  parent?.append(e);
+  return e;
+};
+
+/** Coluna com o topo arredondado (4px) e a base reta. */
+const colPath = (x, y, w, h, r = 4) => {
+  if (h <= 0) return "";
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+};
+
+const frame = (svg, maxValue) => {
+  svg.innerHTML = "";
+  const W = svg.clientWidth || 440, H = 240, pad = { l: 36, r: 24, t: 10, b: 26 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const sc = niceScale(maxValue);
+  const y = (v) => pad.t + (H - pad.t - pad.b) * (1 - v / sc.max);
+  for (const t of sc.ticks) {
+    el("line", { x1: pad.l, x2: W - pad.r, y1: y(t), y2: y(t), class: "grid" }, svg);
+    el("text", { x: pad.l - 6, y: y(t) + 3.5, "text-anchor": "end" }, svg).textContent = fmtInt(t);
+  }
+  return { W, H, pad, y, innerW: W - pad.l - pad.r };
+};
+
+/** Tooltip: posiciona dentro do card. */
+const tipFor = (svg) => {
+  const tip = svg.parentElement.querySelector(".tip");
+  return {
+    show(html, x, y) {
+      tip.innerHTML = html; tip.style.display = "block";
+      const card = svg.parentElement.getBoundingClientRect(), s = svg.getBoundingClientRect();
+      const left = Math.min(s.left - card.left + x + 12, card.width - tip.offsetWidth - 8);
+      tip.style.left = `${Math.max(8, left)}px`; tip.style.top = `${s.top - card.top + y - tip.offsetHeight - 8}px`;
+    },
+    hide() { tip.style.display = "none"; },
+  };
+};
+const tipRows = (title, rows) => `<b>${esc(title)}</b>` + rows.map(([c, k, v]) => `<div class="row2"><i style="background:${c}"></i>${esc(k)}<em>${v}</em></div>`).join("");
+
+/** Barras empilhadas (atendidas embaixo, perdidas em cima), com 2px de folga entre os pedaços. */
+const stackedColumns = (svg, items, keys, labelOf) => {
+  const max = Math.max(...items.map((d) => keys.reduce((n, k) => n + d[k.key], 0)), 0);
+  const f = frame(svg, max);
+  const band = f.innerW / items.length;
+  const w = Math.min(24, band * 0.62);
+  const every = Math.ceil(items.length / Math.floor(f.innerW / 46));
+  const tip = tipFor(svg);
+  items.forEach((d, i) => {
+    const x = f.pad.l + band * i + (band - w) / 2;
+    let acc = 0;
+    const segs = keys.filter((k) => d[k.key] > 0);
+    segs.forEach((k, j) => {
+      const top = f.y(acc + d[k.key]), bottom = f.y(acc);
+      const gap = j > 0 ? 2 : 0; // folga na cor do fundo entre os pedaços
+      const h = bottom - top - gap;
+      const isTop = j === segs.length - 1;
+      el("path", { d: isTop ? colPath(x, top, w, h) : `M${x},${top}H${x + w}V${top + h}H${x}Z`, fill: k.color }, svg);
+      acc += d[k.key];
+    });
+    if (i % every === 0) el("text", { x: x + w / 2, y: f.H - 8, "text-anchor": "middle" }, svg).textContent = labelOf(d, i);
+    const hit = el("rect", { x: f.pad.l + band * i, y: f.pad.t, width: band, height: f.H - f.pad.t - f.pad.b, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", () => tip.show(tipRows(d.title, keys.map((k) => [k.color, k.label, fmtInt(d[k.key])])), x + w / 2, f.y(acc)));
+    hit.addEventListener("mouseleave", tip.hide);
+  });
+  if (!max) el("text", { x: f.W / 2, y: f.H / 2, "text-anchor": "middle" }, svg).textContent = "Sem dados no período";
+};
+
+/** Duas linhas de 2px com marcador no fim e cruz de leitura ao passar o mouse. */
+const lines = (svg, items, keys) => {
+  const max = Math.max(...items.flatMap((d) => keys.map((k) => d[k.key])), 0);
+  const f = frame(svg, max);
+  const x = (i) => f.pad.l + (items.length === 1 ? f.innerW / 2 : (f.innerW * i) / (items.length - 1));
+  const every = Math.ceil(items.length / Math.floor(f.innerW / 46));
+  items.forEach((d, i) => { if (i % every === 0) el("text", { x: x(i), y: f.H - 8, "text-anchor": "middle" }, svg).textContent = fmtDay(d.day); });
+  for (const k of keys) {
+    el("path", { d: items.map((d, i) => `${i ? "L" : "M"}${x(i)},${f.y(d[k.key])}`).join(""), fill: "none", stroke: k.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    const last = items[items.length - 1];
+    el("circle", { cx: x(items.length - 1), cy: f.y(last[k.key]), r: 4, fill: k.color, stroke: "var(--surface-1)", "stroke-width": 2 }, svg);
+  }
+  const cross = el("line", { y1: f.pad.t, y2: f.H - f.pad.b, stroke: "var(--text-secondary)", "stroke-width": 1, opacity: 0 }, svg);
+  const tip = tipFor(svg);
+  const hit = el("rect", { x: f.pad.l, y: f.pad.t, width: f.innerW, height: f.H - f.pad.t - f.pad.b, fill: "transparent" }, svg);
+  hit.addEventListener("mousemove", (ev) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((ev.clientX - r.left) / r.width) * f.W;
+    const i = Math.max(0, Math.min(items.length - 1, Math.round(((px - f.pad.l) / f.innerW) * (items.length - 1))));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 0.6);
+    const d = items[i];
+    tip.show(tipRows(`${weekday(d.day)} ${fmtDay(d.day)}`, keys.map((k) => [k.color, k.label, fmtInt(d[k.key])])), x(i), f.pad.t + 20);
+  });
+  hit.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); tip.hide(); });
+  if (!max) el("text", { x: f.W / 2, y: f.H / 2, "text-anchor": "middle" }, svg).textContent = "Sem dados no período";
+};
+
+const table = (head, rows) => `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+  <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td class="num">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+
+const S1 = "var(--series-1)", S2 = "var(--series-2)";
+
+const render = () => {
+  if (!data) return;
+  const t = data.totals;
+  const rate = t.callsIncoming ? Math.round((t.callsAnswered / t.callsIncoming) * 100) : 0;
+  const open = (t.conversations.open ?? 0) + (t.conversations.pending ?? 0);
+  const tiles = [
+    ["Ligações recebidas", fmtInt(t.callsIncoming), `${fmtInt(t.callsOutgoing)} feitas`],
+    ["Atendidas", fmtInt(t.callsAnswered), t.callsIncoming ? `${rate}% das recebidas` : "—"],
+    ["Perdidas", fmtInt(t.callsMissed), t.callsIncoming ? `${100 - rate}% das recebidas` : "—"],
+    ["Espera média", t.callsAnswered ? fmtDur(t.avgWaitSeconds) : "—", "até atender"],
+    ["Conversa média", t.avgTalkSeconds ? fmtDur(t.avgTalkSeconds) : "—", "por ligação atendida"],
+    ["Mensagens recebidas", fmtInt(t.messagesReceived), `${fmtInt(t.messagesSent)} enviadas`],
+    ["Conversas em aberto", fmtInt(open), `${fmtInt(t.conversations.resolved ?? 0)} resolvidas`],
+  ];
+  $("tiles").innerHTML = tiles.map(([k, v, s]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+
+  const days = data.days.map((d) => ({ ...d, title: `${weekday(d.day)} ${fmtDay(d.day)}` }));
+  stackedColumns($("cCalls"), days, [{ key: "answered", label: "Atendidas", color: S1 }, { key: "missed", label: "Perdidas", color: S2 }], (d) => fmtDay(d.day));
+  $("tCalls").innerHTML = table(["Dia", "Atendidas", "Perdidas", "Feitas"], data.days.map((d) => [fmtDay(d.day), d.answered, d.missed, d.outgoing]));
+
+  lines($("cMsgs"), data.days, [{ key: "received", label: "Recebidas", color: S1 }, { key: "sent", label: "Enviadas", color: S2 }]);
+  $("tMsgs").innerHTML = table(["Dia", "Recebidas", "Enviadas"], data.days.map((d) => [fmtDay(d.day), d.received, d.sent]));
+
+  const hours = data.hours.map((v, h) => ({ v, title: `${String(h).padStart(2, "0")}h – ${String(h + 1).padStart(2, "0")}h` }));
+  stackedColumns($("cHours"), hours, [{ key: "v", label: "Ligações", color: S1 }], (_, h) => `${h}h`);
+  $("tHours").innerHTML = table(["Hora", "Ligações"], data.hours.map((v, h) => [`${h}h`, v]));
+
+  $("agents").innerHTML = data.agents.map((a) => `<tr>
+    <td>${esc(a.agent)}</td><td class="num">${fmtInt(a.callsAnswered)}</td><td class="num">${fmtInt(a.callsMade)}</td>
+    <td class="num">${a.talkSeconds ? fmtDur(a.talkSeconds) : "—"}</td><td class="num">${fmtInt(a.messagesSent)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="empty-note">Nenhum atendimento no período</td></tr>`;
+};
+
+const load = async () => {
+  const q = new URLSearchParams({ days: $("fDays").value });
+  if ($("fLine").value) q.set("line", $("fLine").value);
+  try { data = await api("GET", `/metrics?${q}`); render(); } catch (e) { toast(e.message); }
+};
+
+const me = await loadMe().catch((e) => { toast(e.message); return null; });
+if (me) renderNav(me, "metrics");
+const linesList = await api("GET", "/lines").catch(() => []);
+$("fLine").innerHTML += linesList.map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join("");
+$("fDays").onchange = $("fLine").onchange = load;
+let rt;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+load();
+setInterval(load, 60_000);
+</script>
+</body>
+</html>

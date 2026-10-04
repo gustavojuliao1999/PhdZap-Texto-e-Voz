@@ -21,6 +21,7 @@ import type { WebhookDispatcher } from "../webhooks.js";
 import type { Attendance } from "../attendance.js";
 import { assertPublicUrl } from "../net/safe-fetch.js";
 import { transcriptionConfigured } from "../transcribe.js";
+import { computeMetrics } from "../metrics.js";
 import { docPage } from "./docs.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
@@ -250,6 +251,10 @@ export const startServer = (deps: ServerDeps): http.Server => {
     if (method === "GET" && p === "/admin") {
       if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
       return html(res, page("admin.html"));
+    }
+    if (method === "GET" && p === "/admin/metrics") {
+      if (!(await panelPrincipal(req, url))) return redirect(res, "/login");
+      return html(res, page("metrics.html"));
     }
     if (method === "GET" && p === "/admin/audit") {
       const me = await panelPrincipal(req, url);
@@ -519,6 +524,13 @@ export const startServer = (deps: ServerDeps): http.Server => {
           audit(me, req, "quick-reply.update", { lineId: lineId ?? undefined, target: `/${q.shortcut}` });
           return sendJson(res, 200, q);
         }
+      }
+      if (parts[0] === "metrics" && method === "GET") {
+        const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 7) || 7, 1), 366);
+        const lineId = url.searchParams.get("line");
+        if (lineId && !can(me, lineId, "view")) throw new HttpError(403, "Sem permissão para este telefone");
+        const ids = lineId ? [lineId] : lines.lines.filter((l) => can(me, l.config.id, "view")).map((l) => l.config.id);
+        return sendJson(res, 200, await computeMetrics(db, ids, days));
       }
       if (parts[0] === "audit" && method === "GET") {
         requireAdmin(me);
