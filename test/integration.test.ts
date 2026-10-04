@@ -244,6 +244,34 @@ describe("gateway (integração)", { skip: !BASE_URL && "defina TEST_DATABASE_UR
     assert.equal((await admin("PATCH", `/lines/${lineId}`, { videoCalls: "talvez" })).status, 400);
   });
 
+  it("ligação com vídeo: troca câmera/tela e envia os quadros do atendente", async () => {
+    const r = await line("POST", "/calls", { to: "5581222220000", video: true, clientId: "cli-1" });
+    assert.equal(r.status, 201);
+    const call = await r.json();
+    assert.equal(call.videoStream, true);
+    assert.equal(call.videoSource, "camera");
+    const sw = await line("POST", `/calls/${call.id}/video-source`, { source: "screen" });
+    assert.equal((await sw.json()).videoSource, "screen");
+    assert.equal((await line("POST", `/calls/${call.id}/video-source`, { source: "holograma" })).status, 400);
+    // Outro cliente não envia vídeo nesta ligação.
+    const intruso = new WebSocket(`ws://127.0.0.1:${PORT}/api/v1/video-up?call=${call.id}&clientId=outro&token=${token}`);
+    await new Promise((resolve) => { intruso.onerror = resolve; intruso.onclose = resolve; });
+    assert.notEqual(intruso.readyState, WebSocket.OPEN);
+    // O dono envia um JPEG; o worker falso devolve como vídeo do cliente.
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/v1/video-up?call=${call.id}&clientId=cli-1&token=${token}`);
+    await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+    const stream = await line("GET", `/calls/${call.id}/video`);
+    assert.equal(stream.status, 200);
+    ws.send(new Uint8Array([0xff, 0xd8, 9, 9, 0xff, 0xd9]));
+    const reader = stream.body!.getReader();
+    const { value } = await reader.read();
+    assert.ok(Buffer.from(value!).toString("latin1").includes("image/jpeg"));
+    const t = new Date().toISOString();
+    await emit({ type: "ended", call: { id: call.id, direction: "outgoing", remote: "5581222220000", status: "ended", startedAt: t, endedAt: t } });
+    await new Promise((resolve) => { ws.onclose = resolve; });
+    await reader.cancel();
+  });
+
   it("auditoria registra as alterações sem segredos", async () => {
     await admin("PATCH", `/lines/${lineId}`, { webhookSecret: "super-secreto" });
     const rows = await (await admin("GET", "/audit?action=line.update")).json();

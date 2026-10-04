@@ -12,7 +12,7 @@ import { SendLimiter } from "./rate-limit.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
 import type { WhatsAppState } from "./whatsapp.js";
 import {
-  RESTART_EXIT_CODE, VIDEO_CALL_MODES, type ContactRecord, type GatewayEvent, type LineConfig, type MessageRecord, type MessageStatus,
+  RESTART_EXIT_CODE, VIDEO_CALL_MODES, type ContactRecord, type VideoSource, type GatewayEvent, type LineConfig, type MessageRecord, type MessageStatus,
   type OutgoingContent, type WorkerCommand, type WorkerMessage,
 } from "./worker/protocol.js";
 
@@ -41,6 +41,8 @@ export type CallView = CallRecord & {
   transcript?: string;
   /** Chamada de vídeo com o vídeo do cliente disponível em GET /api/v1/calls/:id/video. */
   videoStream?: boolean;
+  /** Vídeo enviado pelo atendente: câmera, tela ou nenhum. */
+  videoSource?: VideoSource;
 };
 
 /** Mensagem como vista pelos clientes. */
@@ -216,11 +218,11 @@ export class LineRuntime extends EventEmitter {
   /** Liga; se `clientId` vier, a chamada já nasce pertencendo a esse cliente (discador). */
   dial = async (
     to: string,
-    opts: { handler?: string; clientId?: string; agent?: string; userId?: string } = {},
+    opts: { handler?: string; clientId?: string; agent?: string; userId?: string; video?: boolean } = {},
   ): Promise<CallView> => {
     if (this.current) throw new HttpError(409, "Linha ocupada: já existe uma chamada");
     if (this.wa.status !== "open") throw new HttpError(503, "WhatsApp desta linha não está conectado");
-    const record = await this.request<CallRecord>({ cmd: "dial", to, handler: opts.handler });
+    const record = await this.request<CallRecord>({ cmd: "dial", to, handler: opts.handler, video: !!opts.video });
     // Durante o await o worker pode já ter mandado eventos desta chamada.
     const latest = this.current as CallView | null;
     const view: CallView = {
@@ -231,6 +233,7 @@ export class LineRuntime extends EventEmitter {
       ownerClientId: opts.clientId,
       ownerAgent: opts.agent,
       ownerUserId: opts.userId,
+      ...(opts.video ? { videoStream: true, videoSource: "camera" as const } : {}),
     };
     if (view.status !== "ended" && !this.#recentlyEnded.includes(view.id)) {
       this.current = view;
@@ -241,6 +244,22 @@ export class LineRuntime extends EventEmitter {
 
   sendAudio = (callId: string, pcm: Buffer): void => {
     this.#child?.send({ t: "audio", callId, pcm: new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength) });
+  };
+
+  /** Quadro JPEG da câmera/tela do atendente. */
+  sendVideoUp = (callId: string, jpeg: Buffer): void => {
+    this.#child?.send({ t: "video-up", callId, jpeg: new Uint8Array(jpeg.buffer, jpeg.byteOffset, jpeg.byteLength) });
+  };
+
+  /** Liga a câmera ou a tela do atendente (ou desliga o vídeo) na ligação atual. */
+  setVideoSource = async (callId: string, source: VideoSource): Promise<CallView> => {
+    const call = this.current;
+    if (!call || call.id !== callId) throw new HttpError(404, "Chamada não encontrada ou já encerrada");
+    await this.request({ cmd: "video-source", callId, source });
+    // Com o vídeo ligado, o atendente também vê o do cliente.
+    Object.assign(call, { videoSource: source, ...(source !== "off" ? { videoStream: true, isVideo: true } : {}) });
+    this.#emitLine();
+    return call;
   };
 
   /**
@@ -331,6 +350,9 @@ export class LineRuntime extends EventEmitter {
       ownerAgent: prev?.ownerAgent,
       ownerUserId: prev?.ownerUserId,
       ...(e.call.isVideo && this.config.videoCalls === "video" ? { videoStream: true } : {}),
+      // Vídeo ligado pelo atendente (ou ligação com vídeo) continua valendo entre atualizações.
+      ...(prev?.videoStream ? { videoStream: true, isVideo: true } : {}),
+      ...(prev?.videoSource ? { videoSource: prev.videoSource } : {}),
     };
     if (e.type === "ended") { this.#finishCall(view); return; }
     this.current = view;

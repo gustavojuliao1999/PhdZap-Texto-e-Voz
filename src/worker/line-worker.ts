@@ -6,10 +6,11 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { VoipClient } from "baileys-caller";
+import { VoipClient, type VideoCaptureRequest, type VideoFrame } from "baileys-caller";
 import { recordCall } from "../audio/recorder.js";
 import { hiddenMatcher } from "../hidden.js";
-import { VideoRelay } from "../video.js";
+import { VideoRelay, VideoSender } from "../video.js";
+import type { CallSession } from "../session.js";
 import { CallManager } from "../call-manager.js";
 import { floatToPcm16, pcm16ToFloat } from "../audio/pcm.js";
 import { echoHandler, silenceHandler } from "../handlers/echo.js";
@@ -19,7 +20,7 @@ import { log } from "../log.js";
 import { WhatsAppConnection } from "../whatsapp.js";
 import { MessageService } from "./messages.js";
 import {
-  RESTART_EXIT_CODE, type LineConfig, type ParentMessage, type WorkerCommand, type WorkerMessage,
+  RESTART_EXIT_CODE, type LineConfig, type VideoSource, type ParentMessage, type WorkerCommand, type WorkerMessage,
 } from "./protocol.js";
 
 if (!process.send) throw new Error("line-worker deve ser iniciado pelo processo principal (fork)");
@@ -84,18 +85,10 @@ whatsapp.on("state", (state) => {
 });
 manager.on("event", (event) => {
   send({ t: "event", event });
-  // Chamada de vídeo com "mostrar o vídeo": os quadros do cliente vão em JPEG para o painel.
-  if (event.type === "incoming" && event.call.isVideo && line.videoCalls === "video") {
+  // Recebida: o vídeo do cliente só aparece no painel com "mostrar o vídeo" (ou se o atendente ligar o dele).
+  if (event.type === "incoming") {
     const session = manager.get(event.call.id);
-    if (session) {
-      const relay = new VideoRelay();
-      relay.on("jpeg", (jpeg: Buffer) => send({ t: "video", callId: session.id, jpeg }));
-      relay.once("jpeg", () => log.info(`[${session.id}] vídeo do cliente chegando`));
-      session.call.on("video", relay.push);
-      session.call.once("video", (f: { width: number; height: number; format: number; orientation: number }) =>
-        log.info(`[${session.id}] primeiro quadro de vídeo: ${f.width}x${f.height} formato ${f.format} rotação ${f.orientation}`));
-      session.once("ended", relay.stop);
-    }
+    if (session) trackVideo(session, !!event.call.isVideo && line.videoCalls === "video");
   }
   // Gravação: começa quando a ligação conecta (se a linha grava).
   if (event.type === "connected" && line.recordCalls) {
@@ -119,6 +112,66 @@ messages.on("update", (u) => send({ t: "event", event: { type: "message-update",
 messages.on("history", (h) => send({ t: "event", event: { type: "history", ...h } }));
 messages.on("contacts", (contacts) => send({ t: "event", event: { type: "contacts", contacts } }));
 
+// ─── vídeo ─────────────────────────────────────────────────────────────────
+
+type CallVideo = {
+  relay: VideoRelay; sender: VideoSender | null; show: boolean;
+  /** Fonte pedida pelo atendente e a que já foi aplicada no WhatsApp. */
+  want: VideoSource; applied: VideoSource;
+};
+const videos = new Map<string, CallVideo>();
+
+/**
+ * Vídeo de uma ligação: o do cliente (quadros -> JPEG para o painel, se `show`) e o do atendente
+ * (JPEGs do navegador -> NV12 no tamanho que o WhatsApp pedir, enquanto ele pedir).
+ */
+const trackVideo = (session: CallSession, show: boolean, initial: VideoSource = "off"): CallVideo => {
+  const v: CallVideo = { relay: new VideoRelay(), sender: null, show, want: initial, applied: initial };
+  videos.set(session.id, v);
+  v.relay.on("jpeg", (jpeg: Buffer) => { if (v.show) send({ t: "video", callId: session.id, jpeg }); });
+  v.relay.once("jpeg", () => log.info(`[${session.id}] vídeo do cliente chegando`));
+  session.call.on("video", v.relay.push);
+  session.call.once("video", (f: VideoFrame) =>
+    log.info(`[${session.id}] primeiro quadro de vídeo: ${f.width}x${f.height} formato ${f.format} rotação ${f.orientation}`));
+  session.call.on("video-capture", (req: VideoCaptureRequest) => {
+    log.info(`[${session.id}] WhatsApp pediu vídeo (${req.kind === "screen" ? "tela" : "câmera"}) ${req.width}x${req.height} a ${req.maxFps} fps`);
+    v.sender?.stop();
+    v.sender = new VideoSender(req.width, req.height, req.maxFps);
+    v.sender.on("frame", (frame: Uint8Array, w: number, h: number) => session.call.sendVideoFrame(frame, w, h));
+  });
+  session.call.on("video-capture-stop", () => { v.sender?.stop(); v.sender = null; });
+  // O WhatsApp só aceita trocar câmera/tela com a ligação atendida: aplica o que ficou pendente.
+  session.once("connected", () => applyVideoSource(session, v));
+  session.once("ended", () => { v.relay.stop(); v.sender?.stop(); videos.delete(session.id); });
+  return v;
+};
+
+/** Tamanho do compartilhamento de tela enviado ao cliente. */
+const SCREEN_W = 1280, SCREEN_H = 720;
+
+const applyVideoSource = (session: CallSession, v: CallVideo): void => {
+  if (session.ended || v.want === v.applied) return;
+  const call = session.call;
+  const from = v.applied, to = v.want;
+  // Tela -> outra coisa: encerra o compartilhamento (o WhatsApp volta para a câmera).
+  if (from === "screen") call.stopScreenShare();
+  // Compartilhar a tela não desliga a câmera: desligar silenciaria o vídeo da ligação inteira.
+  if (to === "camera") call.startCamera();
+  if (to === "screen") { call.startCamera(); call.startScreenShare(SCREEN_W, SCREEN_H); }
+  if (to === "off") call.stopCamera();
+  v.applied = to;
+  log.info(`[${session.id}] vídeo do atendente: ${to === "camera" ? "câmera" : to === "screen" ? "tela" : "desligado"}`);
+};
+
+const setVideoSource = (session: CallSession, source: VideoSource): void => {
+  const v = videos.get(session.id) ?? trackVideo(session, false);
+  v.want = source;
+  // Quem liga o próprio vídeo também vê o do cliente.
+  if (source !== "off") v.show = true;
+  if (session.record.status === "connected") applyVideoSource(session, v);
+  else log.info(`[${session.id}] vídeo do atendente (${source}) será aplicado quando atenderem`);
+};
+
 const requireSession = (callId: string) => {
   const s = manager.get(callId);
   if (!s) throw new Error("Chamada não encontrada ou já encerrada");
@@ -129,12 +182,16 @@ const run = async (c: WorkerCommand): Promise<unknown> => {
   switch (c.cmd) {
     case "dial": {
       if (!whatsapp.isOpen) throw new Error("WhatsApp desta linha não está conectado");
-      return (await manager.dial(c.to, c.handler)).record;
+      const session = await manager.dial(c.to, c.handler, !!c.video);
+      // Ligação de vídeo já sai com a câmera ligada.
+      trackVideo(session, !!c.video, c.video ? "camera" : "off");
+      return session.record;
     }
     case "accept": manager.accept(c.callId, c.handler); return;
     case "reject": manager.reject(c.callId); return;
     case "hangup": manager.hangup(c.callId); return;
     case "mute": requireSession(c.callId).mute(c.muted); return;
+    case "video-source": setVideoSource(requireSession(c.callId), c.source); return;
     case "clear": requireSession(c.callId).clearAudio(); return;
     case "play": {
       const s = requireSession(c.callId);
@@ -176,6 +233,10 @@ process.on("message", (msg: ParentMessage) => {
   if (msg.t === "audio") {
     const buf = Buffer.from(msg.pcm.buffer, msg.pcm.byteOffset, msg.pcm.byteLength);
     manager.get(msg.callId)?.sendAudio(pcm16ToFloat(buf));
+    return;
+  }
+  if (msg.t === "video-up") {
+    videos.get(msg.callId)?.sender?.push(msg.jpeg);
     return;
   }
   if (msg.t !== "req") return;

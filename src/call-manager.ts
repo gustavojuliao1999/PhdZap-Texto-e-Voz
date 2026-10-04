@@ -56,15 +56,16 @@ export class CallManager extends EventEmitter {
   get = (id: string): CallSession | null => (this.#current?.id === id ? this.#current : null);
 
   /** Faz uma chamada de saída. O handler roda quando o destino atender. */
-  dial = async (to: string, handlerName?: string): Promise<CallSession> => {
+  dial = async (to: string, handlerName?: string, video = false): Promise<CallSession> => {
     if (this.#current) throw new Error("Já existe uma chamada ativa");
     const handler = this.#resolveHandler(handlerName);
     const number = to.replace(/\D/g, "");
     if (number.length < 8) throw new Error("Número inválido (use DDI+DDD+número, só dígitos)");
-    log.info(`ligando para ${number} (handler=${handler.name})`);
+    log.info(`ligando para ${number} (handler=${handler.name}${video ? ", com vídeo" : ""})`);
     const call = await this.client.call(number, {
       audioSource: "stream",
       durationMs: this.cfg.maxCallDurationMs,
+      video,
     });
     // O número discado pode diferir do digitado (ex.: 9º dígito no Brasil).
     return this.#track(new CallSession(call, call.remoteNumber ?? number), handler);

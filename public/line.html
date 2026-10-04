@@ -114,8 +114,8 @@
         <input id="agentName" maxlength="60">
       </div>
       <div class="phones">
-        <div class="card phone-box" id="receiverBox"><h3>Receber</h3><iframe id="receiverFrame" allow="microphone; autoplay" title="Receber ligações"></iframe></div>
-        <div class="card phone-box" id="dialerBox"><h3>Ligar</h3><iframe id="dialerFrame" allow="microphone; autoplay" title="Fazer ligações"></iframe></div>
+        <div class="card phone-box" id="receiverBox"><h3>Receber</h3><iframe id="receiverFrame" allow="microphone; camera; display-capture; autoplay" title="Receber ligações"></iframe></div>
+        <div class="card phone-box" id="dialerBox"><h3>Ligar</h3><iframe id="dialerFrame" allow="microphone; camera; display-capture; autoplay" title="Fazer ligações"></iframe></div>
       </div>
     </div>
 
@@ -152,7 +152,7 @@
         <div class="snippet"><textarea id="snipDialer" readonly></textarea><button class="small" data-copy="snipDialer">Copiar</button></div>
         <div class="hint">
           Troque <code>agent=Atendente</code> pelo nome de quem usa a página (aparece para os outros atendentes e no histórico).
-          O <code>allow="microphone; autoplay"</code> é obrigatório, e o site precisa estar em <b>HTTPS</b> para o navegador liberar o microfone.
+          O <code>allow="microphone; camera; display-capture; autoplay"</code> é obrigatório, e o site precisa estar em <b>HTTPS</b> para o navegador liberar o microfone.
           Para restringir em quais sites os iframes podem aparecer, use <a href="#configuracoes">Configurações › Sites permitidos</a>.
         </div>
         <div class="row" style="margin-top:12px">
@@ -274,7 +274,7 @@ WhatsAppVoice.formatPhone("5581992338229")  // "+55 (81) 99233-8229"
           <option value="video">Atender mostrando o vídeo do cliente (sua câmera fica desligada)</option>
           <option value="reject">Recusar chamadas de vídeo</option>
         </select>
-        <div class="hint">O gateway nunca envia vídeo: o cliente vê a câmera desligada. Com "mostrando o vídeo", quem atende vê a imagem do cliente no telefone do painel.</div>
+        <div class="hint">Com "mostrando o vídeo", quem atende vê a imagem do cliente; a câmera de quem atende começa desligada e pode ser ligada (ou a tela compartilhada) durante a ligação.</div>
 
         <div class="grid2">
           <div>
@@ -693,9 +693,9 @@ const fillDocs = () => {
   const q = `token=${encodeURIComponent(line.token)}`;
   if ($("tokenField").value !== line.token) $("tokenField").value = line.token;
   $("snipReceiver").value =
-    `<iframe src="${base}/embed/receiver?${q}&agent=Atendente"\n  allow="microphone; autoplay" style="width:360px;height:420px;border:0;border-radius:12px"></iframe>`;
+    `<iframe src="${base}/embed/receiver?${q}&agent=Atendente"\n  allow="microphone; camera; display-capture; autoplay" style="width:360px;height:420px;border:0;border-radius:12px"></iframe>`;
   $("snipDialer").value =
-    `<iframe src="${base}/embed/dialer?${q}&agent=Atendente"\n  allow="microphone; autoplay" style="width:360px;height:520px;border:0;border-radius:12px"></iframe>`;
+    `<iframe src="${base}/embed/dialer?${q}&agent=Atendente"\n  allow="microphone; camera; display-capture; autoplay" style="width:360px;height:520px;border:0;border-radius:12px"></iframe>`;
   $("openReceiver").href = `${base}/embed/receiver?${q}&agent=Teste`;
   $("sdkExample").href = `${base}/sdk/exemplo.html?${q}`;
   $("sdkDemo").href = `${base}/sdk/demo?${q}`;

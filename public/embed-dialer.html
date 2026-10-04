@@ -29,6 +29,9 @@
   .timer { font-variant-numeric: tabular-nums; }
   .actions { display: flex; gap: 10px; width: 100%; max-width: 300px; }
   .actions button { flex: 1; padding: 12px; font-size: 15px; }
+  .vdial { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 280px; font-size: 12.5px; color: var(--muted); }
+  .vdial span { white-space: nowrap; }
+  .vdial button { flex: 1; padding: 8px 4px; font-size: 13px; background: var(--panel-2); }
   .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 300px; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -44,6 +47,7 @@
 import { api, connectEvents, notifyParent, CallAudio, ringback, clientId, agentName, params, fmtPhone, fmtDuration, esc } from "/static/voice.js";
 import { byIso, detectCountry } from "/static/countries.js";
 import { createCountryPicker } from "/static/country-picker.js";
+import { CallVideo, captureSource, VIDEO_CSS } from "/static/video-call.js";
 
 const $ = (id) => document.getElementById(id);
 const toast = (msg, ok = false) => {
@@ -62,6 +66,9 @@ const initial = (params.get("number") ?? localStorage.getItem("wvg_last_number")
 const initialCountry = detectCountry(initial) ?? byIso(localStorage.getItem("wvg_country") ?? "BR") ?? byIso("BR");
 let national = initial && initial.startsWith(initialCountry.code) ? initial.slice(initialCountry.code.length) : "";
 let picker = null;
+
+document.head.insertAdjacentHTML("beforeend", `<style>${VIDEO_CSS}</style>`);
+const video = new CallVideo({ onError: (err) => toast(err.message) });
 
 const levels = { mic: 0, remote: 0 };
 const audio = new CallAudio((kind, v) => {
@@ -100,6 +107,7 @@ const render = () => {
   // "Chamando…" enquanto a ligação que eu fiz não for atendida.
   call && mine() && call.status !== "connected" ? ringback.start() : ringback.stop();
 
+  if (!(call && mine()) && video.callId) video.stop();
   if (call && mine()) {
     mode = "call";
     const connected = call.status === "connected";
@@ -117,6 +125,10 @@ const render = () => {
       </div>`;
     $("muteBtn").onclick = () => { audio.setMuted(!audio.muted); api("POST", `/calls/${call.id}/mute`, { muted: audio.muted }).catch(() => {}); render(); };
     $("hangupBtn").onclick = act(async () => { await api("POST", `/calls/${call.id}/hangup`); });
+    // Vídeo: o do cliente, a sua prévia e os botões Câmera / Tela / Sem vídeo.
+    video.sync(call);
+    stage.querySelector(".meters").before(video.el);
+    if (call.videoStream || video.source !== "off") stage.querySelector(".avatar").remove();
     return;
   }
 
@@ -124,6 +136,7 @@ const render = () => {
   // Atualiza só as partes dinâmicas (não recria o campo nem fecha o seletor).
   const lineBusy = !!call;
   $("callBtn").disabled = st !== "open" || lineBusy;
+  for (const b of document.querySelectorAll("[data-vdial]")) b.disabled = st !== "open" || lineBusy;
   $("hint").textContent = lineBusy
     ? (call.direction === "incoming" && call.ownerClientId === clientId ? "Você está atendendo uma ligação (receptor)" : `Linha em uso${call.ownerAgent ? ` por ${call.ownerAgent}` : ""}`)
     : st !== "open" ? "Linha sem telefone conectado" : info ?? "Escolha o país e digite o número com DDD";
@@ -137,6 +150,7 @@ const buildIdle = () => {
     <div class="dial-row"><div id="country"></div><input class="number" id="num" inputmode="tel" autocomplete="off"></div>
     <div class="pad">${["1","2","3","4","5","6","7","8","9","+","0","⌫"].map((k) => `<button data-k="${k}" ${k === "+" ? 'title="Escolher país"' : ""}>${k}</button>`).join("")}</div>
     <div class="wide"><button class="green" id="callBtn">📞 Ligar</button></div>
+    <div class="vdial"><span>Ligar com vídeo:</span><button data-vdial="camera">📷 Câmera</button><button data-vdial="screen">🖥️ Tela</button></div>
     <div class="sub" id="hint"></div>`;
   const input = $("num");
   const paint = () => {
@@ -163,7 +177,16 @@ const buildIdle = () => {
     national = k === "⌫" ? national.slice(0, -1) : national + k;
     paint();
   });
-  $("callBtn").onclick = act(dial);
+  $("callBtn").onclick = act(() => dial());
+  // A câmera/tela é pedida já no clique (o navegador exige o gesto); depois disca com vídeo.
+  for (const b of $("stage").querySelectorAll("[data-vdial]")) b.onclick = act(async () => {
+    let stream;
+    try { stream = await captureSource(b.dataset.vdial); } catch (err) {
+      if (err?.name === "NotAllowedError" || err?.name === "AbortError") return;
+      throw new Error(`Não foi possível usar ${b.dataset.vdial === "screen" ? "a tela" : "a câmera"}: ${err.message}`);
+    }
+    try { await dial({ source: b.dataset.vdial, stream }); } catch (err) { stream.getTracks().forEach((t) => t.stop()); throw err; }
+  });
   paint();
 };
 
@@ -173,7 +196,8 @@ const act = (fn) => async () => {
   try { await fn(); } catch (err) { toast(err.message); } finally { busy = false; render(); }
 };
 
-const dial = async () => {
+/** Disca; com `source` (câmera ou tela já capturada), a ligação é de vídeo. */
+const dial = async ({ source, stream } = {}) => {
   const digits = national.replace(/^0+/, "");
   if (picker.country.iso === "BR" && digits.length < 10) throw new Error("Número incompleto: digite o DDD + número, ex.: (81) 99233-8229");
   if (digits.length < 6) throw new Error("Número incompleto");
@@ -182,7 +206,7 @@ const dial = async () => {
   await audio.prepare();   // microfone antes de discar
   ringback.start();        // começa já no clique (gesto do usuário libera o som)
   try {
-    call = await api("POST", "/calls", { to: number, clientId, agent: agentName || undefined });
+    call = await api("POST", "/calls", { to: number, clientId, agent: agentName || undefined, video: !!source });
   } catch (err) {
     ringback.stop();
     audio.stop();
@@ -191,6 +215,11 @@ const dial = async () => {
   localStorage.setItem("wvg_last_number", number);
   if (call.remote && call.remote !== number) toast(`Discando ${fmtPhone(call.remote)} (número registrado no WhatsApp)`, true);
   notifyParent("dialing", call);
+  if (source) {
+    video.start(call.id, source, stream);
+    // A ligação de vídeo começa com a câmera; tela é uma troca logo em seguida.
+    if (source === "screen") await api("POST", `/calls/${encodeURIComponent(call.id)}/video-source`, { source: "screen" }).catch((err) => toast(err.message));
+  }
   render();
   await audio.start(call.id);
 };

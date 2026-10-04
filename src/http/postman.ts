@@ -36,6 +36,9 @@ const LINE_API: Folder[] = [
       { name: "Silenciar", method: "POST", path: "/api/v1/calls/{{callId}}/mute", body: { muted: true } },
       { name: "Tocar áudio", method: "POST", path: "/api/v1/calls/{{callId}}/play", body: { url: "https://exemplo.com/aviso.mp3" } },
       { name: "Cortar áudio", method: "POST", path: "/api/v1/calls/{{callId}}/clear" },
+      { name: "Ligar com vídeo", method: "POST", path: "/api/v1/calls", body: { to: "{{numero}}", video: true, clientId: "postman" },
+        description: "Os quadros (JPEG) vão pelo WebSocket /api/v1/video-up; o vídeo do cliente sai em GET /calls/:id/video." },
+      { name: "Trocar vídeo (câmera/tela/desligado)", method: "POST", path: "/api/v1/calls/{{callId}}/video-source", body: { source: "screen" } },
     ],
   },
   {

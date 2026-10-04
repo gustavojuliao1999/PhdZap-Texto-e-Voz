@@ -41,7 +41,7 @@ export class CallSession extends EventEmitter {
       remote,
       remoteJid,
       pushName,
-      ...(call.incoming?.isVideo ? { isVideo: true } : {}),
+      ...(call.isVideo ? { isVideo: true } : {}),
       status: "ringing",
       startedAt: new Date().toISOString(),
     };

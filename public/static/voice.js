@@ -30,7 +30,7 @@ export const api = async (method, path, body) => {
   return data;
 };
 
-const wsUrl = (path, extra = {}) => {
+export const wsUrl = (path, extra = {}) => {
   const q = new URLSearchParams({ ...authQuery(), ...extra });
   return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}?${q}`;
 };

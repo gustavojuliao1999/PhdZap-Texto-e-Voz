@@ -44,6 +44,8 @@ export type LineConfig = CallPolicy & {
 };
 
 export const VIDEO_CALL_MODES = ["audio", "video", "reject"] as const;
+export const VIDEO_SOURCES = ["camera", "screen", "off"] as const;
+export type VideoSource = (typeof VIDEO_SOURCES)[number];
 export type VideoCallMode = (typeof VIDEO_CALL_MODES)[number];
 
 export type BusinessHours = Partial<Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", [string, string][]>>;
@@ -125,7 +127,9 @@ export type GatewayEvent =
   | { type: "contacts"; contacts: ContactRecord[] };
 
 export type WorkerCommand =
-  | { cmd: "dial"; to: string; handler?: string }
+  | { cmd: "dial"; to: string; handler?: string; video?: boolean }
+  /** Vídeo enviado pelo atendente: câmera, tela do computador ou nenhum. */
+  | { cmd: "video-source"; callId: string; source: VideoSource }
   | { cmd: "accept"; callId: string; handler?: string }
   | { cmd: "reject"; callId: string }
   | { cmd: "hangup"; callId: string }
@@ -146,7 +150,9 @@ export type WorkerCommand =
 /** Principal -> worker */
 export type ParentMessage =
   | ({ t: "req"; reqId: number } & WorkerCommand)
-  | { t: "audio"; callId: string; pcm: Uint8Array };
+  | { t: "audio"; callId: string; pcm: Uint8Array }
+  /** Quadro JPEG da câmera/tela do atendente, para enviar ao cliente. */
+  | { t: "video-up"; callId: string; jpeg: Uint8Array };
 
 /** Worker -> principal */
 export type WorkerMessage =

@@ -267,6 +267,7 @@ Permissão: `dial`.
 | `handler` | string | `browser`, `ws-bridge`, `echo` ou `silence`. Padrão: `browser` se houver `clientId`, senão o bot configurado na linha. |
 | `clientId` | string | A ligação já nasce sua: abra o [WebSocket de mídia](#áudio-da-ligação-websocket-de-mídia) com o mesmo `clientId` para falar. |
 | `agent` | string | Nome de quem liga (até 60). Usuários do painel usam o próprio nome. |
+| `video` | boolean | Ligação de vídeo. O vídeo enviado sai do [WebSocket de vídeo](#vídeo-do-atendente-websocket) (câmera ou tela); o do cliente, de [`GET /api/v1/calls/:id/video`](#get-apiv1callsidvideo--vídeo-do-cliente). |
 
 ```bash
 curl -X POST $GW/api/v1/calls -H "Authorization: Bearer $TOKEN" \
@@ -283,7 +284,8 @@ linha tem **Gravar as ligações** ligado (`recordCalls`); `404` se não houver 
 
 ### `GET /api/v1/calls/:id/video` — vídeo do cliente
 
-Em chamadas de vídeo recebidas, com o telefone configurado para **mostrar o vídeo do cliente**
+Em ligações de vídeo feitas com `"video": true`, nas que o atendente ligou a câmera ou a tela, e
+nas chamadas de vídeo recebidas com o telefone configurado para **mostrar o vídeo do cliente**
 (`videoCalls: "video"`), devolve o vídeo do cliente como MJPEG
 (`multipart/x-mixed-replace`), até 10 quadros por segundo. Ponha a URL num `<img>`; o fluxo
 fecha quando a ligação acaba. Permissão: quem está na ligação ou `receive`. Com o token da linha,
@@ -293,8 +295,7 @@ use `?token=`.
 <img src="https://GATEWAY/api/v1/calls/CALL_ID/video?token=TOKEN">
 ```
 
-O gateway **nunca envia vídeo**: o cliente vê a câmera do atendente desligada. `404` se a ligação
-não for de vídeo, já tiver acabado ou o telefone estiver configurado para atender só com áudio.
+`404` se a ligação não tiver vídeo para mostrar ou já tiver acabado.
 
 ### `POST /api/v1/calls/:id/accept` — atender
 
@@ -319,6 +320,7 @@ Resposta `200`: [`Call`](#ligação-call).
 | `mute` | `{"muted": true}` | idem | Silencia o seu áudio. |
 | `play` | `{"url": "https://…/aviso.mp3"}` | idem | Toca um arquivo/URL (qualquer formato do ffmpeg). |
 | `clear` | — | idem | Corta o áudio que está tocando. |
+| `video-source` | `{"source": "camera"}` | idem | Vídeo enviado: `camera`, `screen` (tela do computador) ou `off`. Numa ligação de voz, liga o vídeo. Responde a ligação (`videoSource`). |
 
 ---
 
@@ -562,6 +564,18 @@ ws.onmessage = (e) => {
 
 ---
 
+## Vídeo do atendente (WebSocket)
+
+```
+wss://GATEWAY/api/v1/video-up?call=<id>&clientId=<seu clientId>&token=<token>
+```
+
+Só o dono da ligação (o `clientId` que ligou ou atendeu). Envie cada quadro como **JPEG binário**
+(até ~12 por segundo; câmera até 640 px, tela até 1280 px de largura). O gateway converte para o
+tamanho que o WhatsApp pedir e repete o último quadro se faltar algum. Escolha antes a fonte com a
+ação `video-source` (ou ligue com `"video": true`, que começa com a câmera). O WebSocket fecha
+quando a ligação acaba.
+
 ## Áudio da ligação (WebSocket de mídia)
 
 Para atender/ligar com o seu próprio áudio (softphone, URA, IA no seu servidor):
@@ -612,7 +626,7 @@ Se o seu serviço fechar a conexão durante a ligação, o gateway desliga. Exem
 ## Iframes e SDK JavaScript
 
 **Iframes** (painel › telefone › Iframes): `/embed/receiver?token=…&agent=Nome` e
-`/embed/dialer?token=…&agent=Nome[&number=55…]`. Use `allow="microphone; autoplay"` e HTTPS.
+`/embed/dialer?token=…&agent=Nome[&number=55…]`. Use `allow="microphone; camera; display-capture; autoplay"` e HTTPS.
 Eventos para a página que incorporou (`postMessage`):
 
 ```js

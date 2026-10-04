@@ -19,6 +19,8 @@ http.createServer((req, res) => {
   });
 }).listen(Number(process.env.FAKE_CONTROL_PORT), "127.0.0.1");
 process.on("message", (m: any) => {
+  // Vídeo do atendente: devolve como se fosse o vídeo do cliente (o teste vê o caminho todo).
+  if (m.t === "video-up") return send({ t: "video", callId: m.callId, jpeg: m.jpeg });
   if (m.t !== "req") return;
   const ok = (data?: any) => send({ t: "res", reqId: m.reqId, ok: true, data });
   if (m.cmd === "send-message") {
@@ -26,6 +28,9 @@ process.on("message", (m: any) => {
     return ok({ message: { id: `S${++n}`, direction: "outgoing", remote: m.to, remoteJid: `${m.to}@s.whatsapp.net`, status: "sent", timestamp: new Date().toISOString(), type: c.type, text: c.text }, raw: "{}" });
   }
   if (m.cmd === "profile-picture") return ok(null);
+  if (m.cmd === "dial") {
+    return ok({ id: `D${++n}`, direction: "outgoing", remote: m.to, status: "ringing", startedAt: new Date().toISOString(), ...(m.video ? { isVideo: true } : {}) });
+  }
   // Histórico sob pedido: as duas primeiras respostas trazem uma mensagem antiga; depois, nada.
   if (m.cmd === "fetch-history") {
     ok();

@@ -89,14 +89,15 @@ No painel, abra **Incorporar** na linha e copie os códigos:
 
 ```html
 <iframe src="https://SEU_GATEWAY/embed/receiver?token=TOKEN_DA_LINHA&agent=Maria"
-        allow="microphone; autoplay" style="width:360px;height:420px;border:0"></iframe>
+        allow="microphone; camera; display-capture; autoplay" style="width:360px;height:420px;border:0"></iframe>
 
 <iframe src="https://SEU_GATEWAY/embed/dialer?token=TOKEN_DA_LINHA&agent=Maria"
-        allow="microphone; autoplay" style="width:360px;height:480px;border:0"></iframe>
+        allow="microphone; camera; display-capture; autoplay" style="width:360px;height:480px;border:0"></iframe>
 ```
 
 - `agent` é o nome do atendente. Ele aparece para os outros atendentes ("Atendida por Maria") e no histórico.
-- `allow="microphone; autoplay"` é obrigatório. Os navegadores só liberam microfone em **HTTPS**
+- `allow="microphone; camera; display-capture; autoplay"`: `microphone` e `autoplay` são obrigatórios;
+  `camera` e `display-capture` servem para ligar com vídeo (câmera ou tela). Os navegadores só liberam microfone em **HTTPS**
   (ou localhost), então publique o gateway atrás de um proxy HTTPS (Caddy, nginx, Cloudflare Tunnel)
   e use `SECURE_COOKIES=true`.
 - Em **Configurar › Sites que podem incorporar**, restrinja quais domínios podem usar a linha.
@@ -278,9 +279,10 @@ grandes. Uma pessoa em vários grupos soma os acessos.
   o histórico completo. Conversas que nunca passaram pelo gateway só chegam vinculando de novo.
 - **Contatos:** nomes da agenda do celular e do perfil, com pesquisa por nome e número
   (`GET /api/v1/contacts?q=`).
-- **Chamadas de vídeo recebidas** (opção por telefone): atender só com áudio (padrão), atender
-  mostrando o vídeo do cliente no telefone do painel ou recusar. O gateway nunca envia vídeo: o
-  cliente vê a câmera do atendente desligada.
+- **Vídeo:** no discador, **Ligar com vídeo** pela **câmera** ou pela **tela do computador**; durante
+  qualquer ligação dá para trocar entre Câmera, Tela e Sem vídeo, vendo o vídeo do cliente.
+  Chamadas de vídeo recebidas (opção por telefone): atender só com áudio (padrão), mostrando o
+  vídeo do cliente ou recusar.
 - **Contatos ocultos** (administradores): números cujas mensagens e ligações ficam gravadas, mas não
   aparecem no painel, no atendimento, na API nem no webhook; as ligações deles tocam só no celular.
   Configure em Configurações › Contatos ocultos, ou no chat: Dados do contato › Ocultar este contato.
@@ -376,8 +378,8 @@ que são muito verbosos.
 
 - **Uma ligação por linha por vez.** Uma ligação que chega com a linha ocupada não é atendida
   (evento `busy`). Para atender várias ao mesmo tempo, crie mais linhas.
-- Ligações: 1:1 e sem chamadas em grupo. Vídeo só de recebimento: o gateway mostra o vídeo do
-  cliente, mas não transmite câmera, e não faz chamadas de vídeo.
+- Ligações: 1:1 e sem chamadas em grupo. O vídeo enviado passa por JPEG e pelo codificador do
+  WhatsApp sem aceleração: a qualidade é menor que a do WhatsApp Web.
 - Mensagens antigas: vêm do celular, que precisa estar com internet. Conversas que nunca passaram pelo
   gateway só chegam vinculando o telefone de novo (o celular envia o histórico a um vínculo novo).
 - Use um número dedicado por linha. Ligações feitas pelo celular do mesmo número disputam a conta.

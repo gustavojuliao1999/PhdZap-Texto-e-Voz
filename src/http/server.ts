@@ -25,6 +25,7 @@ import { computeMetrics } from "../metrics.js";
 import { docPage } from "./docs.js";
 import { postmanCollection } from "./postman.js";
 import { hiddenMatcher } from "../hidden.js";
+import { VIDEO_SOURCES } from "../worker/protocol.js";
 import { MAX_MESSAGE_BODY_BYTES, parseOutgoing } from "./messages-api.js";
 import { handleUsersApi } from "./users-api.js";
 
@@ -645,7 +646,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
         }
         if (method === "POST") {
           requirePerm(principal, lineId, "dial");
-          const { to, handler, clientId, agent } = await readJson(req);
+          const { to, handler, clientId, agent, video } = await readJson(req);
           if (typeof to !== "string" && typeof to !== "number") throw new HttpError(400, "Campo 'to' obrigatório");
           if (line.isHidden(String(to))) throw new HttpError(403, "Este contato está oculto neste telefone");
           const call = await line.dial(String(to), {
@@ -653,6 +654,7 @@ export const startServer = (deps: ServerDeps): http.Server => {
             clientId: clientId ? String(clientId) : undefined,
             agent: agentFor(principal, agent),
             userId: principal.kind === "user" ? principal.id : undefined,
+            video: !!video,
           });
           return sendJson(res, 201, call);
         }
@@ -669,13 +671,15 @@ export const startServer = (deps: ServerDeps): http.Server => {
       if (parts[0] === "calls" && parts.length === 3 && parts[2] === "video" && method === "GET") {
         const call = line.current;
         if (!call || call.id !== decodeURIComponent(parts[1]) || !call.videoStream) throw new HttpError(404, "Chamada de vídeo não encontrada ou já encerrada");
-        if (!(principal.kind === "user" && call.ownerUserId === principal.id)) requirePerm(principal, lineId, "receive");
+        if (!(principal.kind === "user" && call.ownerUserId === principal.id)) requirePerm(principal, lineId, call.direction === "incoming" ? "receive" : "dial");
         const callId = call.id;
         res.writeHead(200, {
           "content-type": "multipart/x-mixed-replace; boundary=quadro",
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
         });
+        // Cabeçalhos já: o primeiro quadro pode demorar (o navegador não deve ficar esperando).
+        res.flushHeaders();
         const write = (jpeg: Buffer) => {
           // Cliente lento: descarta quadros em vez de acumular.
           if (res.writableLength > 2 * 1024 * 1024) return;
@@ -723,6 +727,11 @@ export const startServer = (deps: ServerDeps): http.Server => {
           case "hangup": ownsOrCan(callPerm); await line.request({ cmd: "hangup", callId }); break;
           case "clear": ownsOrCan(callPerm); await line.request({ cmd: "clear", callId }); break;
           case "mute": ownsOrCan(callPerm); await line.request({ cmd: "mute", callId, muted: !!body.muted }); break;
+          case "video-source": {
+            ownsOrCan(callPerm);
+            if (!VIDEO_SOURCES.includes(body.source)) throw new HttpError(400, `Campo 'source': use ${VIDEO_SOURCES.join(", ")}`);
+            return sendJson(res, 200, await line.setVideoSource(callId, body.source));
+          }
           case "play":
             ownsOrCan(callPerm);
             if (typeof body.url !== "string") throw new HttpError(400, "Campo 'url' obrigatório");
@@ -954,6 +963,24 @@ const attachWebSockets = (
           });
         }
 
+        // Câmera/tela do atendente: JPEGs (binário) do dono da ligação, enviados ao cliente.
+        if (url.pathname === "/api/v1/video-up") {
+          const { line } = await lineAuth(req, url);
+          const callId = url.searchParams.get("call") ?? "";
+          const clientId = url.searchParams.get("clientId") ?? "";
+          const current = line.current;
+          if (!current || current.id !== callId) return fail(404, "Not Found");
+          if (!clientId || current.ownerClientId !== clientId) return fail(403, "Forbidden");
+          return wss.handleUpgrade(req, socket, head, (ws) => {
+            ws.on("message", (data, isBinary) => {
+              if (!isBinary || line.current?.id !== callId) return;
+              line.sendVideoUp(callId, Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+            });
+            const onEvent = (e: LineEvent) => { if (e.type === "ended" && e.call.id === callId) ws.close(1000, "chamada encerrada"); };
+            lines.on("event", onEvent);
+            ws.on("close", () => lines.off("event", onEvent));
+          });
+        }
         if (url.pathname === "/api/v1/media") {
           const { line, principal } = await lineAuth(req, url);
           const callId = url.searchParams.get("call") ?? "";

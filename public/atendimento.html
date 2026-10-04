@@ -70,7 +70,7 @@
     <button id="phoneClose" title="Fechar">✕</button>
   </div>
   <div id="receivers"></div>
-  <div id="dialerBox" hidden><iframe id="dialerFrame" allow="microphone; autoplay" title="Discador"></iframe></div>
+  <div id="dialerBox" hidden><iframe id="dialerFrame" allow="microphone; camera; display-capture; autoplay" title="Discador"></iframe></div>
 </div>
 
 <script type="module">
@@ -122,7 +122,7 @@ const mountReceivers = () => {
     const d = document.createElement("div");
     d.dataset.line = l.id;
     d.hidden = true;
-    d.innerHTML = `<div class="frame-title">${esc(lineLabel(l))}</div><iframe allow="microphone; autoplay" title="Receber ligações de ${esc(lineLabel(l))}"
+    d.innerHTML = `<div class="frame-title">${esc(lineLabel(l))}</div><iframe allow="microphone; camera; display-capture; autoplay" title="Receber ligações de ${esc(lineLabel(l))}"
       src="/embed/receiver?line=${encodeURIComponent(l.id)}${agentQ()}"></iframe>`;
     $("receivers").append(d);
   }

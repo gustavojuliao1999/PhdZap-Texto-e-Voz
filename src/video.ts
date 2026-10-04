@@ -97,3 +97,66 @@ export class VideoRelay extends EventEmitter {
     this.#busy = false;
   };
 }
+
+/**
+ * Vídeo que o gateway envia (câmera ou tela do atendente): recebe JPEGs do navegador, converte
+ * para NV12 no tamanho pedido pelo WhatsApp (com faixas pretas se a proporção for outra) e entrega
+ * em ritmo constante, repetindo o último quadro quando o navegador atrasa.
+ *
+ * Emite `frame` (Uint8Array NV12, largura, altura).
+ */
+export class VideoSender extends EventEmitter {
+  #ff: ChildProcessWithoutNullStreams | null = null;
+  #raw = Buffer.alloc(0);
+  #last: Uint8Array | null = null;
+  #timer: NodeJS.Timeout | null = null;
+  #busy = false;
+  readonly #frameBytes: number;
+
+  constructor(readonly width: number, readonly height: number, readonly fps: number) {
+    super();
+    // NV12 precisa de dimensões pares.
+    this.width = width & ~1;
+    this.height = height & ~1;
+    this.#frameBytes = this.width * this.height * 1.5;
+    const w = this.width, h = this.height;
+    const ff = spawn("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0",
+      "-vf", `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+      "-pix_fmt", "nv12", "-f", "rawvideo", "pipe:1",
+    ]);
+    ff.stdout.on("data", (chunk: Buffer) => this.#onRaw(chunk));
+    ff.stderr.on("data", (d: Buffer) => log.warn(`vídeo enviado (ffmpeg): ${d.toString().trim()}`));
+    ff.stdin.on("error", () => {});
+    ff.on("error", (err) => log.warn(`vídeo enviado: ffmpeg não iniciou: ${err.message}`));
+    this.#ff = ff;
+    // Ritmo constante: o codificador do WhatsApp espera quadros regulares.
+    this.#timer = setInterval(() => { if (this.#last) this.emit("frame", this.#last, this.width, this.height); }, 1000 / Math.min(Math.max(fps, 5), 15));
+  }
+
+  /** Um quadro JPEG vindo do navegador (descartado se o ffmpeg ainda estiver ocupado). */
+  push = (jpeg: Uint8Array): void => {
+    if (!this.#ff || this.#busy) return;
+    if (!this.#ff.stdin.write(jpeg)) {
+      this.#busy = true;
+      this.#ff.stdin.once("drain", () => { this.#busy = false; });
+    }
+  };
+
+  stop = (): void => {
+    if (this.#timer) clearInterval(this.#timer);
+    this.#timer = null;
+    this.#ff?.stdin.end();
+    this.#ff?.kill("SIGKILL");
+    this.#ff = null;
+  };
+
+  #onRaw = (chunk: Buffer): void => {
+    this.#raw = Buffer.concat([this.#raw, chunk]);
+    while (this.#raw.length >= this.#frameBytes) {
+      this.#last = new Uint8Array(this.#raw.subarray(0, this.#frameBytes));
+      this.#raw = this.#raw.subarray(this.#frameBytes);
+    }
+  };
+}

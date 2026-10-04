@@ -23,7 +23,6 @@
   .actions { display: flex; gap: 10px; width: 100%; max-width: 320px; }
   .actions button { flex: 1; padding: 12px; font-size: 15px; }
   .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 320px; font-size: 12px; color: var(--muted); }
-  .video { width: 100%; max-width: 360px; max-height: 46vh; object-fit: contain; border-radius: 12px; background: #000; border: 2px solid var(--green); }
   .tag-video { color: var(--blue); font-size: 13px; font-weight: 600; }
   .soundbar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; font-size: 12.5px; background: rgba(245,165,36,.12); color: var(--amber); }
   .soundbar button { padding: 4px 10px; font-size: 12px; }
@@ -40,8 +39,9 @@
 
 <script type="module">
 import {
-  api, connectEvents, notifyParent, ringtone, autoUnlockSound, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc, authedUrl,
+  api, connectEvents, notifyParent, ringtone, autoUnlockSound, CallAudio, clientId, agentName, fmtPhone, fmtDuration, esc,
 } from "/static/voice.js";
+import { CallVideo, VIDEO_CSS } from "/static/video-call.js";
 
 const $ = (id) => document.getElementById(id);
 const toast = (msg) => {
@@ -88,10 +88,11 @@ const render = () => {
     stage.innerHTML = `<div class="avatar">📵</div><div class="sub">${st === "qr" ? "Nenhum telefone conectado a esta linha." : "Conectando à linha…"}</div>`;
     return;
   }
+  if (!(call && mine()) && video.callId) video.stop();
   if (call && mine()) {
     stage.classList.add(call.status === "connected" ? "incall" : "ringing");
     stage.innerHTML = `<div class="avatar">👤</div>${who(call)}
-      ${call.isVideo ? `<div class="tag-video">📹 Chamada de vídeo${call.videoStream ? " · sua câmera está desligada" : " · atendida só com áudio"}</div>` : ""}
+      ${call.isVideo && !call.videoStream ? `<div class="tag-video">📹 Chamada de vídeo atendida só com áudio · ligue a câmera ou a tela abaixo</div>` : ""}
       <div class="timer" id="timer">${call.status === "connected" ? fmtDuration(call.connectedAt) : "conectando…"}</div>
       <div class="meters">
         <div>Você<div class="meter"><div id="micLevel" style="width:${levels.mic * 100}%"></div></div></div>
@@ -103,14 +104,11 @@ const render = () => {
       </div>`;
     $("muteBtn").onclick = () => { audio.setMuted(!audio.muted); api("POST", `/calls/${call.id}/mute`, { muted: audio.muted }).catch(() => {}); render(); };
     $("hangupBtn").onclick = act(async () => { await api("POST", `/calls/${call.id}/hangup`); });
-    // Vídeo do cliente: o mesmo <img> é reaproveitado entre renderizações (não reabre o fluxo).
-    if (call.videoStream && call.status === "connected") {
-      if (videoEl?.dataset.call !== call.id) {
-        videoEl = Object.assign(document.createElement("img"), { className: "video", alt: "Vídeo do cliente" });
-        videoEl.dataset.call = call.id;
-        videoEl.src = authedUrl(`/api/v1/calls/${encodeURIComponent(call.id)}/video`);
-      }
-      stage.querySelector(".avatar").replaceWith(videoEl);
+    // Vídeo: o do cliente, a sua prévia e os botões Câmera / Tela / Sem vídeo.
+    if (call.status === "connected") {
+      video.sync(call);
+      stage.querySelector(".meters").before(video.el);
+      if (call.videoStream || video.source !== "off") stage.querySelector(".avatar").remove();
     }
     return;
   }
@@ -140,7 +138,8 @@ const render = () => {
     ${agentName ? `<div class="sub">Atendente: ${esc(agentName)}</div>` : ""}`;
 };
 
-let videoEl = null;
+document.head.insertAdjacentHTML("beforeend", `<style>${VIDEO_CSS}</style>`);
+const video = new CallVideo({ onError: (err) => toast(err.message) });
 
 const act = (fn) => async () => {
   if (busy) return;
