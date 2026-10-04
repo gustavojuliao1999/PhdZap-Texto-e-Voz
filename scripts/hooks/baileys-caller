@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Git hook do baileys-caller (post-commit, post-merge, post-checkout, post-rewrite):
+# atualiza o container do gateway em segundo plano, sem segurar o git.
+# Instalado por scripts/install-hooks.sh. Para pular uma vez: AUTO_DEPLOY=0 git commit ...
+[ "${AUTO_DEPLOY:-1}" = 0 ] && exit 0
+
+hook="$(basename "$0")"
+git_dir="$(git rev-parse --git-dir)"
+case "$hook" in
+  # Só troca de branch que mudou o HEAD (não checkout de arquivo).
+  post-checkout) [ "${3:-0}" = 1 ] && [ "$1" != "$2" ] || exit 0 ;;
+  # Durante um rebase o post-rewrite do final já cobre.
+  post-commit) [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] && exit 0 ;;
+  # O --amend já disparou o post-commit.
+  post-rewrite) [ "${1:-}" = rebase ] || exit 0 ;;
+esac
+
+gateway="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+mkdir -p "$gateway/logs"
+echo "baileys-caller mudou: atualizando o container do gateway (log em $gateway/logs/deploy.log)"
+BAILEYS_DIR="$(git rev-parse --show-toplevel)" setsid nohup "$gateway/scripts/deploy.sh" \
+  >>"$gateway/logs/deploy.log" 2>&1 </dev/null &
+exit 0
