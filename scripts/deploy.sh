@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Atualiza o container do gateway: puxa o último commit do baileys-caller (./baileys-caller, via
-# scripts/update-baileys.sh), compila se preciso, reconstrói a imagem e recria o app. Se nada mudou, o Docker reaproveita o cache e o container não reinicia.
+# Atualiza o container do gateway: compila o baileys-caller (./baileys-caller) se preciso,
+# reconstrói a imagem e recria o app. Se nada mudou, o Docker reaproveita o cache e o container não reinicia.
 # Se o app novo não ficar saudável, volta para a imagem anterior.
 #
 #   ./scripts/deploy.sh
-#   BAILEYS_CALLER=/outro/caminho ./scripts/deploy.sh   # usa essa pasta como está, sem git pull
+#   BAILEYS_CALLER=/outro/caminho ./scripts/deploy.sh
 #
-# Disparado sozinho pelos git hooks do baileys-caller (scripts/install-hooks.sh).
+# Disparado sozinho pelos git hooks (scripts/hooks/baileys-caller).
 # Log em logs/deploy.log; falhas também vão para ALERT_WEBHOOK_URL (Slack, Discord…).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -30,13 +30,7 @@ alert() {
     "$ALERT_WEBHOOK_URL" >/dev/null || say "falha ao enviar alerta"
 }
 
-if [ "$BAILEYS_DIR" = ./baileys-caller ] && ! scripts/update-baileys.sh; then
-  alert "não consegui atualizar o baileys-caller do git; o container atual continua no ar."
-  exit 1
-fi
-
-say "deploy (baileys-caller $(git -C "$BAILEYS_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')," \
-    "gateway $(git rev-parse --short HEAD))"
+say "deploy ($(git rev-parse --short HEAD))"
 
 # O dist/ do baileys-caller é o que vai para a imagem: compila se o src/ for mais novo.
 # (Compilar sem necessidade regrava o dist/ e geraria uma imagem nova, reiniciando o app à toa.)

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Git hook do baileys-caller (post-commit, post-merge, post-checkout, post-rewrite):
-# atualiza o container do gateway em segundo plano, sem segurar o git.
-# Instalado por scripts/install-hooks.sh. Para pular uma vez: AUTO_DEPLOY=0 git commit ...
+# Git hook (post-commit, post-merge, post-checkout, post-rewrite): atualiza o container do
+# gateway em segundo plano, sem segurar o git. Instalado em .git/hooks (veja o README). Para pular uma vez: AUTO_DEPLOY=0 git commit ...
 [ "${AUTO_DEPLOY:-1}" = 0 ] && exit 0
 
 hook="$(basename "$0")"
@@ -18,6 +17,6 @@ esac
 gateway="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 mkdir -p "$gateway/logs"
 echo "baileys-caller mudou: atualizando o container do gateway (log em $gateway/logs/deploy.log)"
-BAILEYS_CALLER="$(git rev-parse --show-toplevel)" setsid nohup "$gateway/scripts/deploy.sh" \
+setsid nohup "$gateway/scripts/deploy.sh" \
   >>"$gateway/logs/deploy.log" 2>&1 </dev/null &
 exit 0

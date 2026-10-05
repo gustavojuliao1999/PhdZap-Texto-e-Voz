@@ -19,6 +19,8 @@ npm-debug.log*
 
 # ── Build / caches ─────────────────────────────────────────────
 dist/
+# O baileys-caller vai com o dist/ compilado (é o que entra na imagem)
+!/baileys-caller/dist/
 *.tsbuildinfo
 .cache/
 coverage/
@@ -32,6 +34,3 @@ Thumbs.db
 *.swp
 *~
 backups/
-
-# ── baileys-caller clonado (scripts/update-baileys.sh) ─────────
-/baileys-caller/
