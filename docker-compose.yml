@@ -3,7 +3,8 @@
 #   cp .env.example .env    # defina ADMIN_API_KEY e POSTGRES_PASSWORD
 #   docker compose up -d --build
 #
-# O código do baileys-caller vem da pasta ao lado (../baileys-caller).
+# O baileys-caller fica clonado em ./baileys-caller (scripts/update-baileys.sh clona ou atualiza).
+# Para usar outra pasta: BAILEYS_CALLER=/caminho/da/pasta no .env.
 
 services:
   db:
@@ -28,7 +29,7 @@ services:
     build:
       context: .
       additional_contexts:
-        baileys-caller: ../baileys-caller
+        baileys-caller: ${BAILEYS_CALLER:-./baileys-caller}
     restart: unless-stopped
     depends_on:
       db:

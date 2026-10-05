@@ -9,3 +9,4 @@ auth
 Dockerfile
 docker-compose.yml
 backups
+baileys-caller

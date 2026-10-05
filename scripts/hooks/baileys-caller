@@ -18,6 +18,6 @@ esac
 gateway="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 mkdir -p "$gateway/logs"
 echo "baileys-caller mudou: atualizando o container do gateway (log em $gateway/logs/deploy.log)"
-BAILEYS_DIR="$(git rev-parse --show-toplevel)" setsid nohup "$gateway/scripts/deploy.sh" \
+BAILEYS_CALLER="$(git rev-parse --show-toplevel)" setsid nohup "$gateway/scripts/deploy.sh" \
   >>"$gateway/logs/deploy.log" 2>&1 </dev/null &
 exit 0

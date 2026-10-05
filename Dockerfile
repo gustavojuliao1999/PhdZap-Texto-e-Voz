@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # PhdZap. O baileys-caller vem do contexto extra "baileys-caller"
-# (docker compose: build.additional_contexts → ../baileys-caller).
+# (docker compose: build.additional_contexts → ./baileys-caller).
 
 # ── whisper.cpp (transcrição local, TRANSCRIBE=local) ──
 # Compilado para rodar em qualquer CPU x86/ARM: escolhe na hora a melhor variante (AVX2, AVX-512…).
@@ -29,7 +29,7 @@ COPY --from=whisper /opt/whisper /opt/whisper
 ENV WHISPER_CLI=/opt/whisper/whisper-cli
 
 # ── baileys-caller (biblioteca de voz, já compilada em dist/) ──
-WORKDIR /app/baileys-caller
+WORKDIR /app/whatsapp-voice-gateway/baileys-caller
 COPY --from=baileys-caller package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY --from=baileys-caller dist ./dist

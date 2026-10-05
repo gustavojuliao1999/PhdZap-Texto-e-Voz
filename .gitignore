@@ -32,3 +32,6 @@ Thumbs.db
 *.swp
 *~
 backups/
+
+# ── baileys-caller clonado (scripts/update-baileys.sh) ─────────
+/baileys-caller/

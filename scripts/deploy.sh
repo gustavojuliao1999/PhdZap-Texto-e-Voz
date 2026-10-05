@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Atualiza o container do gateway: compila o baileys-caller (../baileys-caller), reconstrói a
-# imagem e recria o app. Se nada mudou, o Docker reaproveita o cache e o container não reinicia.
+# Atualiza o container do gateway: puxa o último commit do baileys-caller (./baileys-caller, via
+# scripts/update-baileys.sh), compila se preciso, reconstrói a imagem e recria o app. Se nada mudou, o Docker reaproveita o cache e o container não reinicia.
 # Se o app novo não ficar saudável, volta para a imagem anterior.
 #
 #   ./scripts/deploy.sh
-#   BAILEYS_DIR=/outro/caminho ./scripts/deploy.sh
+#   BAILEYS_CALLER=/outro/caminho ./scripts/deploy.sh   # usa essa pasta como está, sem git pull
 #
 # Disparado sozinho pelos git hooks do baileys-caller (scripts/install-hooks.sh).
 # Log em logs/deploy.log; falhas também vão para ALERT_WEBHOOK_URL (Slack, Discord…).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BAILEYS_DIR="${BAILEYS_DIR:-../baileys-caller}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 mkdir -p logs
 set -a; [ -f .env ] && . ./.env; set +a
+BAILEYS_DIR="${BAILEYS_CALLER:-./baileys-caller}"
 
 # Um deploy por vez; os seguintes esperam na fila.
 exec 9>logs/deploy.lock
@@ -29,6 +29,11 @@ alert() {
     -d "$(printf '{"text":"%s","content":"%s","level":"warn","key":"deploy"}' "$text" "$text")" \
     "$ALERT_WEBHOOK_URL" >/dev/null || say "falha ao enviar alerta"
 }
+
+if [ "$BAILEYS_DIR" = ./baileys-caller ] && ! scripts/update-baileys.sh; then
+  alert "não consegui atualizar o baileys-caller do git; o container atual continua no ar."
+  exit 1
+fi
 
 say "deploy (baileys-caller $(git -C "$BAILEYS_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')," \
     "gateway $(git rev-parse --short HEAD))"

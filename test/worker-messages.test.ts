@@ -5,7 +5,7 @@ import { MessageService } from "../src/worker/messages.js";
 
 // Baileys real (dependência do baileys-caller) para normalizar as mensagens como em produção.
 // @ts-ignore
-const baileysMod = await import("../../baileys-caller/node_modules/@whiskeysockets/baileys/lib/index.js").catch(() => null);
+const baileysMod = await import("../baileys-caller/node_modules/@whiskeysockets/baileys/lib/index.js").catch(() => null);
 const baileys = baileysMod ? { ...(baileysMod.default ?? {}), ...baileysMod } : null;
 
 const setup = (groups = false) => {

@@ -1,6 +1,6 @@
 # PhdZap
 
-Central de atendimento por WhatsApp (mensagens e ligações de voz) sobre o [`baileys-caller`](../baileys-caller):
+Central de atendimento por WhatsApp (mensagens e ligações de voz) sobre o [`baileys-caller`](baileys-caller):
 
 - **Painel** com login de usuários, **grupos e permissões por telefone**: várias **linhas**
   (telefones), cada uma com QR de pareamento, **token próprio** e configurações.
@@ -27,14 +27,22 @@ instância por processo). Se uma linha cair, ela é reiniciada sozinha sem afeta
 
 ## Rodando com Docker (recomendado)
 
-Requisitos: Docker com Compose. A pasta `../baileys-caller` precisa estar ao lado deste projeto,
-porque o build a usa como contexto extra.
+Requisitos: Docker com Compose e git. O build usa o `baileys-caller` clonado na pasta
+`./baileys-caller` (dentro deste projeto, ignorada pelo git). O script clona na primeira vez e
+puxa o último commit nas seguintes:
 
 ```bash
+scripts/update-baileys.sh     # clona/atualiza ./baileys-caller
 cp .env.example .env
 # edite o .env: ADMIN_API_KEY (super admin) e POSTGRES_PASSWORD
 docker compose up -d --build
 ```
+
+**Recomendado: mantenha o baileys-caller atualizado.** Para atualizar tudo de uma vez, use
+`./scripts/deploy.sh`: ele roda o `update-baileys.sh`, reconstrói a imagem e recria o container
+sozinho (só reinicia se algo mudou). Repositório e branch: `BAILEYS_REPO` e `BAILEYS_BRANCH`
+(padrão `gustavojuliao1999/baileys-caller`, branch `feat/expor-socket`). Para usar outra pasta
+sem git pull, defina `BAILEYS_CALLER=/caminho/da/pasta` no `.env`.
 
 Abra **http://localhost:3000/**, clique em **Entrar com chave de acesso** e use a `ADMIN_API_KEY`.
 
@@ -45,7 +53,7 @@ Abra **http://localhost:3000/**, clique em **Entrar com chave de acesso** e use 
 
 ## Rodando sem Docker (desenvolvimento)
 
-Requisitos: Node.js ≥ 20, `ffmpeg` no PATH, `../baileys-caller` compilado (`npm run build` lá) e um
+Requisitos: Node.js ≥ 20, `ffmpeg` no PATH, `./baileys-caller` compilado (`npm run build` lá) e um
 PostgreSQL. O do compose serve: `docker compose up -d db`.
 
 ```bash
@@ -376,15 +384,15 @@ docker compose -f docker-compose.https.yml up -d --build
 ./scripts/restore.sh 20261004-030000     # restaurar (para o app, substitui banco e sessões)
 ```
 
-**Atualização automática** quando o `baileys-caller` muda. O `scripts/deploy.sh` compila o
-baileys-caller se o `src/` mudou, reconstrói a imagem e recria o app. Só reinicia o app se algo mudou
+**Atualização automática** quando o `baileys-caller` muda. O `scripts/deploy.sh` puxa o último
+commit do git (em `./baileys-caller`), compila o baileys-caller se o `src/` mudou, reconstrói a imagem e recria o app. Só reinicia o app se algo mudou
 de fato e volta para a imagem anterior se a nova não ficar saudável. O log fica em `logs/deploy.log`,
 e as falhas também vão para `ALERT_WEBHOOK_URL`. Para disparar a cada commit, pull, rebase ou troca de
 branch no baileys-caller, instale o hook:
 
 ```bash
 for h in post-commit post-merge post-checkout post-rewrite; do
-  ln -sf "$PWD/scripts/hooks/baileys-caller" "../baileys-caller/.git/hooks/$h"
+  ln -sf "$PWD/scripts/hooks/baileys-caller" "baileys-caller/.git/hooks/$h"
 done
 ./scripts/deploy.sh                    # ou rode à mão a qualquer momento
 AUTO_DEPLOY=0 git commit ...           # no baileys-caller: commit sem atualizar o container
