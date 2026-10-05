@@ -4,7 +4,7 @@
  *
  * Variáveis: LINE_CONFIG (JSON de LineConfig), LINE_AUTH_DIR.
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { VoipClient, type VideoCaptureRequest, type VideoFrame } from "baileys-caller";
 import { recordCall } from "../audio/recorder.js";
@@ -59,9 +59,12 @@ const handlers: Record<string, CallHandler> = {
 
 // Sem sessão salva = vai vincular agora. Como "computador" (Desktop), o celular envia o histórico
 // completo; a escolha fica gravada para a sessão continuar se apresentando igual.
+// Vínculos novos usam Ubuntu: o WhatsApp recusa vincular como Mac/Windows Desktop (erro 428).
+// Sessões antigas (marcador vazio) seguem como Mac, que é como foram vinculadas.
 const desktopMarker = path.join(authDir, "..", "desktop-link");
-const linkAsDesktop = !existsSync(path.join(authDir, "creds.json")) || existsSync(desktopMarker);
-if (linkAsDesktop) { mkdirSync(path.dirname(desktopMarker), { recursive: true }); writeFileSync(desktopMarker, ""); }
+const isNewLink = !existsSync(path.join(authDir, "creds.json"));
+if (isNewLink) { mkdirSync(path.dirname(desktopMarker), { recursive: true }); writeFileSync(desktopMarker, "ubuntu"); }
+const desktopOs = existsSync(desktopMarker) ? (readFileSync(desktopMarker, "utf8").trim() || "macOS") : null;
 
 const client = new VoipClient({
   authDir,
@@ -72,7 +75,7 @@ const client = new VoipClient({
     // Guarda todo histórico que o celular mandar (o padrão do Baileys descarta o FULL).
     shouldSyncHistoryMessage: () => true,
     syncFullHistory: true,
-    ...(linkAsDesktop ? { browser: baileys.Browsers.macOS("Desktop") } : {}),
+    ...(desktopOs ? { browser: desktopOs === "ubuntu" ? baileys.Browsers.ubuntu("Desktop") : baileys.Browsers.macOS("Desktop") } : {}),
   }),
 });
 const whatsapp = new WhatsAppConnection(client, authDir);
